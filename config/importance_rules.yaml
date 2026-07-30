@@ -1,0 +1,384 @@
+enabled: true
+thresholds:
+  critical: 80
+  important: 55
+  normal: 0
+display:
+  max_highlights: 10
+feishu_highlight_card:
+  enabled: true
+  title: "本期重点新闻提示"
+  show_summary: false
+  show_source: false
+  show_published_at: false
+  use_importance_max_highlights: true
+confidence_levels:
+- official
+- corroborated
+- single_reliable
+- unverified
+rules:
+- id: top_leadership
+  category: high_level_politics
+  description: 总统副总统正式讲话/政策/出访/过境
+  weight: 1.0
+  subjects:
+  - 台湾总统
+  - 台湾副总统
+  - 总统府
+  - 赖清德
+  actions:
+  - 发表
+  - 宣布
+  - 提出
+  - 定调
+  - 启动
+  - 出访
+  - 过境
+  - 会晤
+  - 展开系列演讲
+  scenes:
+  - 520
+  - 就职
+  - 双十
+  - 国庆演说
+  - 两岸政策
+  - 国防政策
+  - 外交政策
+  - 重大施政
+  - 国家安全
+  dimensions:
+    strategic_domain: 30
+    entity_level: 35
+    action_intensity: 20
+    node_significance: 25
+    information_freshness: 15
+    spillover_impact: 20
+  negative:
+  - 接见
+  - 祝贺
+  - 活动预告
+  - 猜测
+  - 尚未证实
+  - 传出
+  - 地方行程
+  - ??
+  - 传闻
+  - 预告
+  - 参访
+  - 节目
+  - 致词
+- id: party_power
+  category: party_politics
+  description: 政党人事/路线/高层外访
+  weight: 1.0
+  subjects:
+  - 民进党
+  - 国民党
+  - 民众党
+  - 党主席
+  - 中常会
+  - 中执会
+  - 全代会
+  - 党代会
+  - 主要派系
+  actions:
+  - 改选
+  - 当选
+  - 落选
+  - 当选
+  - 扩权
+  - 结盟
+  - 分裂
+  - 提名
+  - 通过
+  - 调整路线
+  - 访问美国
+  - 访问大陆
+  - 会见美官员
+  dimensions:
+    strategic_domain: 20
+    entity_level: 25
+    action_intensity: 15
+    node_significance: 20
+    information_freshness: 10
+    spillover_impact: 15
+  negative:
+  - 例行党务会议
+  - 党内人士评论
+  - 猜测
+  - 活动照片
+  - 宣导活动
+  - 节目
+  - 一般造势
+  - 基层活动
+- id: cross_strait_policy
+  category: cross_strait
+  description: 大陆涉台法律/惠台措施/台湾官方回应
+  weight: 1.0
+  subjects:
+  - 大陆
+  - 中国
+  - 中共
+  - 北京
+  - 国台办
+  - 台湾官方
+  - 陆委会
+  - 行政院
+  - 国安部门
+  - 民进党
+  - 国民党
+  - 台湾主管机关
+  actions:
+  - 发布
+  - 通过
+  - 实施
+  - 公布
+  - 回应
+  - 批评
+  - 评价
+  - 定性
+  - 反制
+  - 研议
+  scenes:
+  - 涉台法律
+  - 民族团进法
+  - 惠台措施
+  - 惠台十条
+  - 融合发展
+  - 台胞台企
+  - 惩诫措施
+  - 制裁
+  - 统一
+  - 国家安全
+  - 人员往来
+  - 经贸措施
+  dimensions:
+    strategic_domain: 25
+    entity_level: 30
+    action_intensity: 20
+    node_significance: 15
+    information_freshness: 15
+    spillover_impact: 20
+  negative:
+  - 讲座
+  - 学者
+  - 活动照片
+  - 节目评论
+  - ????
+  - 宣导活动
+  - ??
+  - 学者评论
+  - 一般学者评论
+  - 既有惠台政策宣传
+  - 地方交流活动
+- id: taiwan_us_relations
+  category: foreign_relations
+  description: 台美谈判/高层出访/政府间关系变化
+  weight: 1.0
+  subjects:
+  - 台湾
+  - 美国
+  - 白宫
+  - 美国国务院
+  - USTR
+  - 美国国会
+  - 台湾总统
+  - 台湾主要政党主席
+  - 邦交国
+  - 外国政府
+  actions:
+  - 谈判
+  - 签署
+  - 达成协议
+  - 加征关税
+  - 降低关税
+  - 出访
+  - 过境
+  - 访问
+  - 会晤
+  - 军售
+  - 制裁
+  - 断交
+  - 建交
+  - 调整政策
+  dimensions:
+    strategic_domain: 25
+    entity_level: 30
+    action_intensity: 20
+    node_significance: 15
+    information_freshness: 15
+    spillover_impact: 25
+  negative:
+  - 智库活动
+  - 尚未证实
+  - 宴会
+  - 规划中行程
+  - 猜测
+  - 传出
+  - 传出将访问
+  - 传闻
+  - 礼节性会见
+  - 节目
+- id: maritime_security
+  category: maritime
+  description: 渔船碰撞/海缆受损/敏感水域执法
+  weight: 1.0
+  subjects:
+  - 大陆渔船
+  - 大陆船只
+  - 台湾海巡
+  - 台湾军方
+  - 货轮
+  - 海警
+  - 海事部门
+  actions:
+  - 碰撞
+  - 撞船
+  - 翻覆
+  - 扣押
+  - 登检
+  - 驱离
+  - 追缉
+  - 伤亡
+  - 失联
+  - 割断
+  - 损坏
+  - 破坏
+  - 拖救
+  - 调查
+  scenes:
+  - 金门
+  - 马祖
+  - 台海中线
+  - 限制水域
+  - 禁限制水域
+  - 海底光缆
+  - 港口
+  - 能源设施
+  - 通信设施
+  - 关键基础设施
+  dimensions:
+    strategic_domain: 30
+    entity_level: 25
+    action_intensity: 25
+    node_significance: 15
+    information_freshness: 10
+    spillover_impact: 25
+  negative:
+  - 去年
+  - 普通海事事故
+  - 旧闻
+  - 一般搁浅
+  - 及时驱离
+  - 回顾
+  - ????
+  - ??
+  - 一般越界
+  - 无关两岸安全船只故障
+- id: border_penetration
+  category: border_security
+  description: 快艇抵岸/人员登陆/防线穿透
+  weight: 1.0
+  subjects:
+  - 大陆男子
+  - 大陆人员
+  - 大陆船只
+  - 大陆快艇
+  - 橡皮艇
+  - 舢舨
+  - 无人机
+  actions:
+  - 越界
+  - 闯入
+  - 偷渡
+  - 抵达
+  - 靠岸
+  - 登陆
+  - 进入
+  - 逼近
+  - 未被发现
+  - 突破防线
+  scenes:
+  - 台湾本岛
+  - 淡水河口
+  - 港口
+  - 海滩
+  - 机场
+  - 营区
+  - 军事设施
+  - 首都周边
+  - 重要河口
+  - 外岛
+  dimensions:
+    strategic_domain: 30
+    entity_level: 25
+    action_intensity: 30
+    node_significance: 15
+    information_freshness: 15
+    spillover_impact: 25
+  modifiers:
+    high_penetration:
+    - 长时间未被发现
+    - 安全部门承认监控漏洞
+    - 短期内连续发生
+    - 涉事人员身份异常
+    - 可能存在测试反应能力的报道
+  negative:
+  - 外海即被
+  - 被拦截
+  - 无关安全的一般海上事故
+  - ???
+  - 外海被拦截
+  - ????
+  - 在外海即被拦截
+  - 一般偷渡
+  - 普通经济性偷渡
+- id: irregular_diplomacy
+  category: covert_diplomacy
+  description: 非公开/临时/非常规出访/专机/秘密过境
+  weight: 1.0
+  subjects:
+  - 台湾总统
+  - 台湾副总统
+  - 总统府
+  - 赖清德
+  actions:
+  - 出访
+  - 过境
+  - 搭乘
+  - 会晤
+  - 转机
+  - 改变行程
+  scenes:
+  - 秘密
+  - 未公开
+  - 低调
+  - 临时
+  - 突然
+  - 改道
+  - 改变航线
+  - 外国专机
+  - 政府专机
+  - 包机
+  - 秘密过境
+  - 秘密会晤
+  dimensions:
+    strategic_domain: 25
+    entity_level: 35
+    action_intensity: 20
+    node_significance: 15
+    information_freshness: 15
+    spillover_impact: 25
+  negative:
+  - 例行行程
+  - ????
+  - 普通公开出访
+  - 尚未证实
+  - 猜测
+  - 传出
+  - 评论
+  - ??
+  - 传闻
+  - 节目
+  - 推测
