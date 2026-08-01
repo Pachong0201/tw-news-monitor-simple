@@ -155,3 +155,41 @@ class TestDatabase:
         assert len(result) == 1
         assert result[0].published_at is None
         assert result[0].title == "無時間新聞"
+
+    def test_article_and_outbox_are_atomic(self, db):
+        article = make_article(url="https://example.com/atomic")
+        with pytest.raises(RuntimeError):
+            with db.transaction():
+                db.save_articles([article], commit=False)
+                db.enqueue_delivery(
+                    "run-1:text", "text_digest", "console",
+                    {"text": "digest"}, commit=False,
+                )
+                raise RuntimeError("abort")
+
+        assert not db.article_exists(article.url)
+        assert db.conn.execute(
+            "SELECT COUNT(*) FROM notification_outbox"
+        ).fetchone()[0] == 0
+
+    def test_outbox_retry_and_idempotency(self, db):
+        now = datetime.fromisoformat("2026-07-31T00:00:00+00:00")
+        assert db.enqueue_delivery(
+            "run-1:text", "text_digest", "console",
+            {"text": "digest"}, now=now,
+        )
+        assert not db.enqueue_delivery(
+            "run-1:text", "text_digest", "console",
+            {"text": "duplicate"}, now=now,
+        )
+        rows = db.get_due_deliveries(now)
+        assert len(rows) == 1
+        import json
+        assert json.loads(rows[0]["payload_json"])["schema_version"] == 1
+
+        db.mark_delivery_failed(rows[0]["id"], "temporary", now=now)
+        row = db.conn.execute(
+            "SELECT status, attempt_count, last_error FROM notification_outbox"
+        ).fetchone()
+        assert row == ("pending", 1, "temporary")
+        assert db.get_due_deliveries(now) == []

@@ -217,6 +217,6 @@ def send_card(
     code = data.get("code", -1)
     if code != 0:
         msg = data.get("msg", "unknown error")
-        raise RuntimeError(f"????????: code={code}, msg={msg}")
+        raise RuntimeError(f"飞书发送卡片失败: code={code}, msg={msg}")
     logger.info("Card message sent successfully")
 

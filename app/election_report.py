@@ -1,4 +1,5 @@
 ﻿import argparse
+import hashlib
 import json
 import logging
 import os
@@ -14,6 +15,8 @@ from app.election_classifier import ElectionClassifier
 from app.election_quality_check import ElectionQualityCheck
 from app.election_utils import format_taipei_date
 from app.deepseek_analysis import DeepSeekClient
+from app.election_word_report import build_election_word_report
+from app.feishu import send_document
 
 TAIPEI = timezone(timedelta(hours=8))
 logger = logging.getLogger(__name__)
@@ -49,6 +52,95 @@ def inject_manual_facts(facts_list, city_key):
 def load_style() -> dict:
     with open(STYLE_PATH, encoding='utf-8') as f:
         return yaml.safe_load(f)
+
+
+def _feishu_send_disabled() -> bool:
+    return os.getenv('DISABLE_FEISHU_SEND', '').strip().lower() in (
+        '1', 'true', 'yes',
+    )
+
+
+def send_existing_report(
+    store: ElectionFactStore,
+    report_period: str,
+    *,
+    no_send: bool = False,
+) -> bool:
+    """Verify/rebuild an existing Word report and actually send it."""
+    row = store.conn.execute(
+        """SELECT word_path, json_path, feishu_status
+           FROM report_runs WHERE report_period=?""",
+        (report_period,),
+    ).fetchone()
+    if not row:
+        print(f'未找到报告 {report_period}')
+        return False
+
+    word_path_raw, json_path_raw, _status = row
+    if not json_path_raw and word_path_raw and str(word_path_raw).endswith('.json'):
+        json_path_raw = word_path_raw
+        word_path_raw = ''
+    json_path = Path(json_path_raw) if json_path_raw else (
+        PROJECT_ROOT / 'data' / 'reports' / 'election' / f'{report_period}.json'
+    )
+    if not json_path.exists():
+        raise FileNotFoundError(f'报告 JSON 不存在：{json_path}')
+    report_payload = json.loads(json_path.read_text(encoding='utf-8'))
+    report = report_payload.get('_normalized_report', report_payload)
+    evidence_path = (
+        PROJECT_ROOT / 'data' / 'reports' / 'election' / 'evidence'
+        / f'{report_period}.evidence.json'
+    )
+    evidence = (
+        json.loads(evidence_path.read_text(encoding='utf-8'))
+        if evidence_path.exists() else {}
+    )
+    word_path = Path(word_path_raw) if word_path_raw else (
+        PROJECT_ROOT / 'data' / 'reports' / 'election'
+        / f'台湾选举态势分析_{report_period}.docx'
+    )
+    if not word_path.exists() or word_path.suffix.lower() != '.docx':
+        word_path = build_election_word_report(
+            report, evidence, word_path.with_suffix('.docx'),
+            report_date=report_period,
+        )
+    word_sha256 = hashlib.sha256(word_path.read_bytes()).hexdigest()
+    store.conn.execute(
+        """UPDATE report_runs SET word_path=?, json_path=?, word_sha256=?
+           WHERE report_period=?""",
+        (str(word_path), str(json_path), word_sha256, report_period),
+    )
+    store.conn.commit()
+
+    if no_send or _feishu_send_disabled():
+        print(f'报告已就绪但未发送：{word_path}')
+        return True
+    app_id = os.getenv('FEISHU_APP_ID', '').strip()
+    app_secret = os.getenv('FEISHU_APP_SECRET', '').strip()
+    chat_id = os.getenv('FEISHU_CHAT_ID', '').strip()
+    if not app_id or not app_secret or not chat_id:
+        store.conn.execute(
+            "UPDATE report_runs SET feishu_status='pending_credentials' WHERE report_period=?",
+            (report_period,),
+        )
+        store.conn.commit()
+        raise RuntimeError('飞书应用凭证未配置完整')
+    try:
+        send_document(word_path, app_id, app_secret, chat_id)
+    except Exception:
+        store.conn.execute(
+            "UPDATE report_runs SET feishu_status='failed' WHERE report_period=?",
+            (report_period,),
+        )
+        store.conn.commit()
+        raise
+    store.conn.execute(
+        "UPDATE report_runs SET feishu_status='sent' WHERE report_period=?",
+        (report_period,),
+    )
+    store.conn.commit()
+    print(f'报告已发送：{word_path}')
+    return True
 
 def build_fact_base(store: ElectionFactStore, news_conn, classifier: ElectionClassifier,
                     city: str, days: int = 30) -> list[dict]:
@@ -99,17 +191,27 @@ def main():
     store = ElectionFactStore(DB_PATH)
     store.connect()
     store.create_tables()
-    import sqlite3
-    news_conn = sqlite3.connect(str(args.db))
-    news_conn.row_factory = sqlite3.Row
 
     analysis_mode = os.getenv('ANALYSIS_MODE', 'deepseek').strip().lower()
     report_date = args.date
     report_period = f"{report_date}"
 
+    if args.send_existing:
+        print('send-existing: 校验并发送已生成的报告')
+        try:
+            send_existing_report(store, report_period, no_send=args.no_send)
+        finally:
+            store.close()
+        return
+
     if store.is_report_generated(report_period) and not args.force:
         print(f'报告 {report_period} 已生成，跳过（使用 --force 强制重新生成）')
+        store.close()
         return
+
+    import sqlite3
+    news_conn = sqlite3.connect(str(args.db))
+    news_conn.row_factory = sqlite3.Row
 
     if args.facts_only or analysis_mode == 'facts_only':
         tainan_facts = build_fact_base(store, news_conn, classifier, 'tainan', days=200)
@@ -127,23 +229,15 @@ def main():
         print(f'facts_only模式: 已生成事实底表')
         print(f'  台南: {len(tainan_facts)} 条事实 -> {tainan_path}')
         print(f'  新北: {len(nt_facts)} 条事实 -> {nt_path}')
-        return
-
-    if args.send_existing:
-        print('send-existing: 检查已生成的报告')
-        row = store.conn.execute(
-            "SELECT word_path, feishu_status FROM report_runs WHERE report_period=?",
-            (report_period,)
-        ).fetchone()
-        if not row:
-            print(f'未找到报告 {report_period}')
-            return
-        print(f'报告路径: {row[0]}, 状态: {row[1]}')
+        news_conn.close()
+        store.close()
         return
 
     api_key = os.getenv('DEEPSEEK_API_KEY', '')
     if not api_key:
         print('未配置 DEEPSEEK_API_KEY')
+        news_conn.close()
+        store.close()
         return
 
     client = DeepSeekClient(
@@ -176,6 +270,8 @@ def main():
     final_result = client.analyze(f'{system_prompt}\n\n{final_prompt}', user_message)
     if final_result.get('status') != 'success':
         print(f'DeepSeek报告生成失败: {final_result.get("error")}')
+        news_conn.close()
+        store.close()
         return
 
     def _get_str(d, *keys):
@@ -230,6 +326,8 @@ def main():
         with open(draft_path, 'w', encoding='utf-8') as f:
             json.dump(final_result, f, ensure_ascii=False, indent=2)
         print(f'草稿保存至: {draft_path}')
+        news_conn.close()
+        store.close()
         return
 
     evidence_dir = PROJECT_ROOT / 'data' / 'reports' / 'election' / 'evidence'
@@ -247,32 +345,52 @@ def main():
     report_dir = PROJECT_ROOT / 'data' / 'reports' / 'election'
     report_dir.mkdir(parents=True, exist_ok=True)
     report_json_path = report_dir / f'{report_date}.json'
+    report_payload = dict(final_result)
+    report_payload['_normalized_report'] = normalized
     with open(report_json_path, 'w', encoding='utf-8') as f:
-        json.dump(final_result, f, ensure_ascii=False, indent=2)
+        json.dump(report_payload, f, ensure_ascii=False, indent=2)
+
+    word_path = report_dir / f'台湾选举态势分析_{report_date}.docx'
+    build_election_word_report(
+        normalized, evidence, word_path, report_date=report_date,
+    )
+    word_sha256 = hashlib.sha256(word_path.read_bytes()).hexdigest()
 
     total_tokens = (final_result.get('input_tokens', 0) + final_result.get('output_tokens', 0))
 
     feishu_status = 'not_sent'
-    if not args.no_send and os.getenv('DISABLE_FEISHU_SEND', '').strip().lower() not in ('1', 'true', 'yes'):
-        feishu_status = 'ready_to_send'
+    if not args.no_send and not _feishu_send_disabled():
+        app_id = os.getenv('FEISHU_APP_ID', '').strip()
+        app_secret = os.getenv('FEISHU_APP_SECRET', '').strip()
+        chat_id = os.getenv('FEISHU_CHAT_ID', '').strip()
+        if app_id and app_secret and chat_id:
+            try:
+                send_document(word_path, app_id, app_secret, chat_id)
+                feishu_status = 'sent'
+            except Exception as exc:
+                feishu_status = 'failed'
+                logger.exception('飞书发送选举报告失败: %s', exc)
+        else:
+            feishu_status = 'pending_credentials'
 
     store.conn.execute('''
         INSERT OR REPLACE INTO report_runs
         (report_period, cutoff_time, fact_count, event_count,
          deepseek_model, api_status, input_tokens, output_tokens,
-         word_path, feishu_status, generated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         word_path, json_path, word_sha256, feishu_status, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         report_period, datetime.now(TAIPEI).isoformat(),
         len(tainan_facts) + len(nt_facts),
         store.get_event_count(),
         os.getenv('DEEPSEEK_MODEL', 'deepseek-chat'),
         'success', total_tokens // 2, total_tokens // 2,
-        str(report_json_path), feishu_status,
+        str(word_path), str(report_json_path), word_sha256, feishu_status,
         datetime.now(TAIPEI).isoformat(),
     ))
     store.conn.commit()
-    print(f'报告已生成: {report_json_path}')
+    print(f'报告 JSON 已生成: {report_json_path}')
+    print(f'报告 Word 已生成: {word_path}')
     print(f'飞书状态: {feishu_status}')
 
     store.close()

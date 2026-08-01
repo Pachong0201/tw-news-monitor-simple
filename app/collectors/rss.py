@@ -1,5 +1,6 @@
 from datetime import datetime
 import email.utils
+import logging
 
 from ..time_utils import TAIPEI
 import feedparser
@@ -7,13 +8,27 @@ import feedparser
 from ..models import Article
 from .base import BaseCollector
 
+logger = logging.getLogger(__name__)
+
 
 class RSSCollector(BaseCollector):
     """Collector for RSS/Atom feeds."""
 
     def collect(self) -> list[Article]:
         resp = self.client.get(self.url)
+        resp.raise_for_status()
         feed = feedparser.parse(resp.text)
+        if feed.bozo and not feed.entries:
+            raise ValueError(
+                f"Invalid RSS feed for {self.source_id}: {feed.bozo_exception}"
+            )
+        if feed.bozo:
+            logger.warning(
+                "RSS feed %s is malformed but contains %d usable entries: %s",
+                self.source_id,
+                len(feed.entries),
+                feed.bozo_exception,
+            )
         articles: list[Article] = []
         now = datetime.now()
 
@@ -44,4 +59,8 @@ class RSSCollector(BaseCollector):
                 fetched_at=now,
                 position=i + 1,
             ))
+        if feed.bozo and not articles:
+            raise ValueError(
+                f"Malformed RSS feed for {self.source_id} has no usable entries"
+            )
         return articles

@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS report_runs (
     input_tokens INTEGER DEFAULT 0,
     output_tokens INTEGER DEFAULT 0,
     word_path TEXT,
+    json_path TEXT,
     word_sha256 TEXT,
     feishu_status TEXT DEFAULT 'not_sent',
     generated_at TEXT NOT NULL
@@ -87,6 +88,11 @@ class ElectionFactStore:
     def create_tables(self):
         for ddl in [CREATE_MATCHES, CREATE_EVENTS, CREATE_EVENT_SOURCES, CREATE_REPORT_RUNS, CREATE_SCAN_STATE]:
             self.conn.execute(ddl)
+        report_columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(report_runs)")
+        }
+        if 'json_path' not in report_columns:
+            self.conn.execute("ALTER TABLE report_runs ADD COLUMN json_path TEXT")
         self.conn.commit()
 
     def close(self):

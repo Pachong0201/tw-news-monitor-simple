@@ -80,6 +80,12 @@ CREATE TABLE IF NOT EXISTS election_state_snapshots (
     superseded_at TEXT
 )'''
 
+ACTIVE_SNAPSHOT_UNIQUE_IDX = '''
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_snapshot_per_election
+ON election_state_snapshots(election_id)
+WHERE snapshot_status='active'
+'''
+
 CREATE_FTS = '''
 CREATE VIRTUAL TABLE IF NOT EXISTS election_events_fts USING fts5(
     title, fact_summary, actors, issues, tokenize='unicode61'
@@ -179,6 +185,8 @@ class ElectionContextRepository:
             self.conn.execute("ALTER TABLE election_state_snapshots ADD COLUMN superseded_by TEXT")
         if 'superseded_at' not in existing_cols:
             self.conn.execute("ALTER TABLE election_state_snapshots ADD COLUMN superseded_at TEXT")
+        self._migrate_duplicate_active_snapshots()
+        self.conn.execute(ACTIVE_SNAPSHOT_UNIQUE_IDX)
         # Create poll tables
         for ddl_poll in [CREATE_POLLS, CREATE_POLL_QUESTIONS, CREATE_POLL_RESULTS, CREATE_POLL_LINKS]:
             try: self.conn.execute(ddl_poll)
@@ -191,17 +199,49 @@ class ElectionContextRepository:
         except Exception:
             pass
         self.conn.execute(CREATE_FTS)
-        self.conn.commit()
-        events = self.conn.execute('SELECT rowid, title, fact_summary, actors_json, issues_json FROM election_events').fetchall()
-        for e in events:
+        events = self.conn.execute(
+            'SELECT rowid, title, fact_summary, actors_json, issues_json '
+            'FROM election_events'
+        ).fetchall()
+        for event in events:
             try:
                 self.conn.execute(
-                    'INSERT INTO election_events_fts(rowid, title, fact_summary, actors, issues) VALUES (?,?,?,?,?)',
-                    (e['rowid'], e['title'], e['fact_summary'], e['actors_json'], e['issues_json'])
+                    'INSERT INTO election_events_fts'
+                    '(rowid, title, fact_summary, actors, issues) '
+                    'VALUES (?,?,?,?,?)',
+                    (
+                        event['rowid'], event['title'], event['fact_summary'],
+                        event['actors_json'], event['issues_json'],
+                    ),
                 )
             except Exception:
                 pass
         self.conn.commit()
+
+    def _migrate_duplicate_active_snapshots(self) -> None:
+        """Keep the newest active snapshot and supersede legacy duplicates."""
+        election_ids = self.conn.execute(
+            """SELECT election_id FROM election_state_snapshots
+               WHERE snapshot_status='active' GROUP BY election_id
+               HAVING COUNT(*)>1"""
+        ).fetchall()
+        migrated_at = datetime.now().isoformat()
+        for election_row in election_ids:
+            election_id = election_row[0]
+            rows = self.conn.execute(
+                """SELECT snapshot_id FROM election_state_snapshots
+                   WHERE election_id=? AND snapshot_status='active'
+                   ORDER BY as_of DESC, created_at DESC, snapshot_id DESC""",
+                (election_id,),
+            ).fetchall()
+            keeper = rows[0][0]
+            for row in rows[1:]:
+                self.conn.execute(
+                    """UPDATE election_state_snapshots
+                       SET snapshot_status='superseded', superseded_by=?,
+                           superseded_at=? WHERE snapshot_id=?""",
+                    (keeper, migrated_at, row[0]),
+                )
 
     def close(self):
         if self.conn:
@@ -458,6 +498,7 @@ class ElectionContextRepository:
                       actors: list[str] | None = None, issues: list[str] | None = None,
                       event_type: str = '', date_from: str = '', date_to: str = '',
                       fact_status: str = '', min_significance: int = 0,
+                      include_superseded: bool = False,
                       limit: int = 20) -> list[dict]:
         base_query = 'SELECT * FROM election_events WHERE 1=1'
         base_params = []
@@ -470,6 +511,8 @@ class ElectionContextRepository:
         if fact_status:
             base_query += ' AND fact_status=?'
             base_params.append(fact_status)
+        elif not include_superseded:
+            base_query += " AND fact_status!='superseded'"
         if min_significance:
             base_query += ' AND significance_score>=?'
             base_params.append(min_significance)
@@ -545,14 +588,26 @@ class ElectionContextRepository:
             evt['requires_attribution'] = False
         return evt
 
-    def get_latest_snapshot(self, election_id: str) -> dict | None:
-        # Only return active snapshots; superseded/archived/preview excluded
-        rows = self.conn.execute(
-            "SELECT * FROM election_state_snapshots WHERE election_id=? AND snapshot_status='active' ORDER BY as_of DESC LIMIT 1",
-            (election_id,)
-        ).fetchall()
-        if len(rows) > 1:
-            raise RuntimeError(f"Multiple active snapshots for {election_id}")
+    def get_latest_snapshot(
+        self, election_id: str, as_of: str | None = None,
+    ) -> dict | None:
+        if as_of:
+            rows = self.conn.execute(
+                """SELECT * FROM election_state_snapshots
+                   WHERE election_id=? AND snapshot_status IN ('active','superseded')
+                     AND as_of<=?
+                   ORDER BY as_of DESC, created_at DESC, snapshot_id DESC LIMIT 1""",
+                (election_id, as_of),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                """SELECT * FROM election_state_snapshots
+                   WHERE election_id=? AND snapshot_status='active'
+                   ORDER BY as_of DESC, created_at DESC, snapshot_id DESC""",
+                (election_id,),
+            ).fetchall()
+            if len(rows) > 1:
+                raise RuntimeError(f"Multiple active snapshots for {election_id}")
         if not rows:
             return None
         d = dict(rows[0])
@@ -579,18 +634,34 @@ class ElectionContextRepository:
 
     def save_snapshot(self, snapshot: dict):
         status = snapshot.get('snapshot_status', 'active')
-        self.conn.execute('''INSERT OR REPLACE INTO election_state_snapshots
-            (snapshot_id, election_id, as_of, state_json, supporting_event_ids_json,
-             created_at, snapshot_status, superseded_by, superseded_at)
-            VALUES (?,?,?,?,?,?,?,?,?)''',
-            (snapshot['snapshot_id'], snapshot['election_id'], snapshot['as_of'],
-             json.dumps(snapshot.get('state_json', snapshot), ensure_ascii=False),
-             json.dumps(snapshot.get('supporting_event_ids', []), ensure_ascii=False),
-             snapshot.get('created_at', datetime.now().isoformat()),
-             status,
-             snapshot.get('superseded_by'),
-             snapshot.get('superseded_at')))
-        self.conn.commit()
+        now = datetime.now().isoformat()
+        try:
+            self.conn.execute('BEGIN')
+            if status == 'active':
+                self.conn.execute(
+                    """UPDATE election_state_snapshots
+                       SET snapshot_status='superseded', superseded_by=?,
+                           superseded_at=?
+                       WHERE election_id=? AND snapshot_status='active'
+                         AND snapshot_id!=?""",
+                    (
+                        snapshot['snapshot_id'], now, snapshot['election_id'],
+                        snapshot['snapshot_id'],
+                    ),
+                )
+            self.conn.execute('''INSERT OR REPLACE INTO election_state_snapshots
+                (snapshot_id, election_id, as_of, state_json, supporting_event_ids_json,
+                 created_at, snapshot_status, superseded_by, superseded_at)
+                VALUES (?,?,?,?,?,?,?,?,?)''',
+                (snapshot['snapshot_id'], snapshot['election_id'], snapshot['as_of'],
+                 json.dumps(snapshot.get('state_json', snapshot), ensure_ascii=False),
+                 json.dumps(snapshot.get('supporting_event_ids', []), ensure_ascii=False),
+                 snapshot.get('created_at', now), status,
+                 snapshot.get('superseded_by'), snapshot.get('superseded_at')))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def mark_event_superseded(self, event_id: str):
         self.conn.execute(
@@ -598,13 +669,18 @@ class ElectionContextRepository:
             (datetime.now().isoformat(), event_id))
         self.conn.commit()
 
-    def get_milestone_events(self, election_id: str, limit: int = 10) -> list[dict]:
+    def get_milestone_events(
+        self, election_id: str, limit: int = 10, date_to: str = '',
+    ) -> list[dict]:
         types = ('party_nomination', 'primary_result', 'candidate_announcement',
                  'candidate_withdrawal', 'primary_registration')
+        date_clause = ' AND occurred_at<=?' if date_to else ''
+        params = (election_id, *types, *((date_to,) if date_to else ()), limit)
         rows = self.conn.execute(
             'SELECT * FROM election_events WHERE election_id=? AND event_type IN '
             f'({",".join("?" for _ in types)}) AND fact_status!="superseded" '
+            f'{date_clause} '
             'ORDER BY significance_score DESC, occurred_at DESC LIMIT ?',
-            (election_id, *types, limit)
+            params,
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
