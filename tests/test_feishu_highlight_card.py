@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from app.importance import select_highlights, ImportanceResult
-from app.notifier import FeishuNotifier, ConsoleNotifier
+from app.notifier import FeishuNotifier, ConsoleNotifier, NotificationError
 
 
 class MockArticle:
@@ -135,7 +135,7 @@ class TestFeishuHighlightCard:
         assert n.send_highlight_card([]) is False
 
     @patch("app.feishu.httpx.post")
-    def test_send_failure_returns_false(self, mock_post):
+    def test_send_failure_propagates_for_retry(self, mock_post):
         mock_resp = MagicMock()
         mock_resp.json.side_effect = [
             {"code": 0, "tenant_access_token": "tok"},
@@ -145,7 +145,8 @@ class TestFeishuHighlightCard:
         now = datetime(2026, 7, 21, 12, 0)
         n = FeishuNotifier("https://hook", app_id="id", app_secret="sec", chat_id="ch")
         hl = [(MockArticle("重大", published_at=now), ImportanceResult(85, "critical"))]
-        assert n.send_highlight_card(hl) is False
+        with pytest.raises(NotificationError):
+            n.send_highlight_card(hl)
 class TestConsoleNotifierCard:
     def test_console_returns_false(self):
         assert ConsoleNotifier().send_highlight_card([]) is False

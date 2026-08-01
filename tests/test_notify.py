@@ -1,4 +1,10 @@
-from app.notifier import ConsoleNotifier, Notifier
+import httpx
+import pytest
+
+from app.notifier import (
+    ConsoleNotifier, FeishuNotifier, NotificationError, Notifier,
+    TelegramNotifier,
+)
 
 
 class CaptureNotifier(Notifier):
@@ -145,35 +151,28 @@ class TestEnvVars:
         n = create_notifier()
         assert isinstance(n, ConsoleNotifier)
 
-    def test_feishu_missing_webhook_exits(self):
-        """Feishu without webhook raises SystemExit."""
+    def test_feishu_missing_webhook_raises(self):
+        """Feishu without webhook raises a retryable notification error."""
         import os
         os.environ["NOTIFIER"] = "feishu"
         os.environ["FEISHU_WEBHOOK_URL"] = ""
         try:
             from app.notifier import create_notifier
-            import sys
-            try:
+            with pytest.raises(NotificationError):
                 create_notifier()
-                assert False, "Should have raised SystemExit"
-            except SystemExit:
-                pass
         finally:
             os.environ["NOTIFIER"] = "console"
 
-    def test_telegram_missing_config_exits(self):
-        """Telegram without token/chat_id raises SystemExit."""
+    def test_telegram_missing_config_raises(self):
+        """Telegram without token/chat_id raises a notification error."""
         import os
         os.environ["NOTIFIER"] = "telegram"
         os.environ["TELEGRAM_BOT_TOKEN"] = ""
         os.environ["TELEGRAM_CHAT_ID"] = ""
         try:
             from app.notifier import create_notifier
-            try:
+            with pytest.raises(NotificationError):
                 create_notifier()
-                assert False, "Should have raised SystemExit"
-            except SystemExit:
-                pass
         finally:
             os.environ["NOTIFIER"] = "console"
 
@@ -203,3 +202,25 @@ class TestConsoleEncoding:
         except UnicodeEncodeError:
             pass
         assert True
+
+
+def test_feishu_http_failure_propagates(monkeypatch):
+    response = MockResponseError()
+    monkeypatch.setattr("app.notifier.httpx.post", lambda *a, **k: response)
+    with pytest.raises(NotificationError):
+        FeishuNotifier("https://example.com/hook").send("digest")
+
+
+def test_telegram_http_failure_propagates(monkeypatch):
+    response = MockResponseError()
+    monkeypatch.setattr("app.notifier.httpx.post", lambda *a, **k: response)
+    with pytest.raises(NotificationError):
+        TelegramNotifier("token", "chat").send("digest")
+
+
+class MockResponseError:
+    def raise_for_status(self):
+        raise httpx.HTTPStatusError(
+            "503", request=httpx.Request("POST", "https://example.com"),
+            response=httpx.Response(503),
+        )

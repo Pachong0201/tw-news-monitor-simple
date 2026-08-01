@@ -1,9 +1,44 @@
 import logging
+import sys
 from abc import ABC, abstractmethod
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+class NotificationError(RuntimeError):
+    """A delivery failed and should remain eligible for retry."""
+
+
+def build_highlight_card(highlights: list) -> dict:
+    """Build the Feishu card payload without performing network I/O."""
+    critical_count = sum(1 for _, result in highlights if result.level == "critical")
+    important_count = sum(1 for _, result in highlights if result.level == "important")
+    item_lines = []
+    for article, result in highlights:
+        prefix = "【重大】" if result.level == "critical" else "【重点】"
+        item_lines.append(prefix + article.title.replace("\n", " ").replace("\r", ""))
+    summary_parts = []
+    if critical_count:
+        summary_parts.append(f"重大{critical_count}条")
+    if important_count:
+        summary_parts.append(f"重点{important_count}条")
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "重点新闻提醒"},
+            "template": "red" if critical_count else "orange",
+        },
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(item_lines)}},
+            {"tag": "hr"},
+            {"tag": "note", "elements": [{
+                "tag": "plain_text",
+                "content": "、".join(summary_parts) + "，详情见本期Word简报。",
+            }]},
+        ],
+    }
 
 
 class Notifier(ABC):
@@ -88,12 +123,12 @@ class ConsoleNotifier(Notifier):
         try:
             print(text)
         except UnicodeEncodeError:
-            _sys.stdout.buffer.write(text.encode("utf-8"))
-            _sys.stdout.buffer.write(b"\n")
-            _sys.stdout.buffer.flush()
+            sys.stdout.buffer.write(text.encode("utf-8"))
+            sys.stdout.buffer.write(b"\n")
+            sys.stdout.buffer.flush()
             logger.warning(
                 "Console UTF-8 fallback (stdout encoding=%s)",
-                _sys.stdout.encoding,
+                sys.stdout.encoding,
             )
 
 
@@ -125,6 +160,7 @@ class FeishuNotifier(Notifier):
             logger.info("Feishu notification sent (length=%d)", len(text))
         except httpx.HTTPError as e:
             logger.error("Feishu send failed: %s", e)
+            raise NotificationError("Feishu text delivery failed") from e
 
     def send_highlight_card(self, highlights: list) -> bool:
         """Send an interactive highlight card to Feishu group chat.
@@ -134,7 +170,10 @@ class FeishuNotifier(Notifier):
                         by the shared select_highlights() function.
 
         Returns:
-            True if card was sent successfully, False otherwise.
+            True if sent, False when credentials/highlights are unavailable.
+
+        Raises:
+            NotificationError: if an attempted network delivery fails.
         """
         if not self._app_id or not self._app_secret or not self._chat_id:
             logger.warning("Feishu credentials not configured, skipping highlight card")
@@ -142,50 +181,7 @@ class FeishuNotifier(Notifier):
 
         critical_count = sum(1 for _, r in highlights if r.level == "critical")
         important_count = sum(1 for _, r in highlights if r.level == "important")
-        total = len(highlights)
-        has_critical = critical_count > 0
-
-        # Build card JSON
-        title_text = "????????"
-        header_template = "red" if has_critical else "orange"
-        item_lines = []
-
-        for article, result in highlights:
-            pfx = "????" if result.level == "critical" else "????"
-            safe_title = article.title.replace("\n", " ").replace("\r", "")
-            item_lines.append(pfx + safe_title)
-
-        content_md = "\n".join(item_lines)
-
-        # Bottom summary
-        summary_parts = []
-        if critical_count > 0:
-            summary_parts.append(f"\u91cd\u5927{critical_count}\u6761")
-        if important_count > 0:
-            summary_parts.append(f"\u91cd\u70b9{important_count}\u6761")
-        summary_line = "\u3001".join(summary_parts) + "\uff0c\u8be6\u60c5\u89c1\u672c\u671fWord\u7b80\u62a5\u3002"
-
-        # Build Feishu interactive card structure
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": title_text},
-                "template": header_template,
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": content_md},
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "note",
-                    "elements": [
-                        {"tag": "plain_text", "content": summary_line}
-                    ],
-                },
-            ],
-        }
+        card = build_highlight_card(highlights)
 
         try:
             from .feishu import send_card as _send_card
@@ -194,7 +190,7 @@ class FeishuNotifier(Notifier):
             return True
         except Exception as e:
             logger.error("Highlight card send failed: %s", e)
-            return False
+            raise NotificationError("Feishu highlight card delivery failed") from e
 
 
 class TelegramNotifier(Notifier):
@@ -224,13 +220,13 @@ class TelegramNotifier(Notifier):
             logger.info("Telegram notification sent (length=%d)", len(text))
         except httpx.HTTPError as e:
             logger.error("Telegram send failed: %s", e)
+            raise NotificationError("Telegram delivery failed") from e
 
 
-def create_notifier() -> Notifier:
+def create_notifier(notifier_type: str | None = None) -> Notifier:
     """Factory to create notifier based on env config.
 
-    Raises SystemExit with a clear message if feishu or telegram is
-    selected but required env vars are missing.
+    Raises NotificationError if the selected channel is not configured.
     """
     import os
 
@@ -238,7 +234,9 @@ def create_notifier() -> Notifier:
 
     load_dotenv()
 
-    notifier_type = os.getenv("NOTIFIER", "console").strip().lower()
+    notifier_type = (
+        notifier_type or os.getenv("NOTIFIER", "console")
+    ).strip().lower()
 
     if notifier_type == "feishu":
         webhook = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
@@ -247,7 +245,7 @@ def create_notifier() -> Notifier:
                 "NOTIFIER=feishu but FEISHU_WEBHOOK_URL is not set. "
                 "Set FEISHU_WEBHOOK_URL in .env or change NOTIFIER=console."
             )
-            raise SystemExit(1)
+            raise NotificationError("FEISHU_WEBHOOK_URL is not configured")
         fs_id = os.getenv("FEISHU_APP_ID", "").strip()
         fs_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
         fs_chat = os.getenv("FEISHU_CHAT_ID", "").strip()
@@ -262,7 +260,7 @@ def create_notifier() -> Notifier:
                 "TELEGRAM_CHAT_ID is not set. "
                 "Set both in .env or change NOTIFIER=console."
             )
-            raise SystemExit(1)
+            raise NotificationError("Telegram credentials are not configured")
         return TelegramNotifier(token, chat_id)
 
     # Default: console
