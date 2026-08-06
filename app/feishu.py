@@ -190,6 +190,80 @@ def send_document(
 
     logger.info("File message sent successfully: file_key=%s", file_key)
 
+
+def build_highlight_card(
+    highlights: list,
+    title: str = "本期重点新闻提示",
+    show_summary: bool = False,
+    show_source: bool = False,
+    show_published_at: bool = False,
+) -> dict:
+    """Build a Feishu interactive card for important news highlights.
+
+    Args:
+        highlights: list of (article, ImportanceResult) tuples sorted by
+                    select_highlights() (critical first, then by score).
+        title: card header title.
+        show_summary: include the "重大X条、重点Y条" summary line.
+        show_source: append source name under each item.
+        show_published_at: append publish time under each item.
+
+    Returns:
+        Card dict suitable for send_card().
+    """
+    if not highlights:
+        raise ValueError("No highlights to build card")
+
+    critical_count = sum(1 for _, r in highlights if r.level == "critical")
+    important_count = sum(1 for _, r in highlights if r.level == "important")
+    has_critical = critical_count > 0
+    header_template = "red" if has_critical else "orange"
+
+    item_lines = []
+    for article, result in highlights:
+        pfx = "【重大】" if result.level == "critical" else "【重点】"
+        safe_title = article.title.replace("\n", " ").replace("\r", "")
+        line = pfx + safe_title
+        if show_source and getattr(article, "source_name", ""):
+            line += f"\n来源：{article.source_name}"
+        if show_published_at and getattr(article, "published_at", None):
+            line += f"\n时间：{article.published_at.strftime('%Y-%m-%d %H:%M')}"
+        item_lines.append(line)
+
+    content_md = "\n".join(item_lines)
+
+    summary_parts = []
+    if show_summary:
+        if critical_count > 0:
+            summary_parts.append(f"重大{critical_count}条")
+        if important_count > 0:
+            summary_parts.append(f"重点{important_count}条")
+    summary_line = ("、".join(summary_parts) + "，" if summary_parts else "")
+    summary_line += "详情见本期Word简报。"
+
+    card = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": header_template,
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": content_md},
+            },
+            {"tag": "hr"},
+            {
+                "tag": "note",
+                "elements": [
+                    {"tag": "plain_text", "content": summary_line}
+                ],
+            },
+        ],
+    }
+    return card
+
+
 def send_card(
     card: dict,
     app_id: str,
@@ -217,6 +291,6 @@ def send_card(
     code = data.get("code", -1)
     if code != 0:
         msg = data.get("msg", "unknown error")
-        raise RuntimeError(f"????????: code={code}, msg={msg}")
+        raise RuntimeError(f"飞书发送卡片失败: code={code}, msg={msg}")
     logger.info("Card message sent successfully")
 

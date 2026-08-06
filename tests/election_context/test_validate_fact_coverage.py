@@ -26,12 +26,12 @@ def _load_jsonl(path):
 # Test 1: Formal events readable
 def test_formal_events_readable():
     evts = _load_jsonl(SEED / 'events.jsonl')
-    assert len(evts) == 28
+    assert len(evts) == 41
 
 # Test 2: Formal sources readable
 def test_formal_sources_readable():
     srcs = _load_jsonl(SEED / 'sources.jsonl')
-    assert len(srcs) == 80
+    assert len(srcs) == 112
 
 # Test 3: Time matrix periods complete
 def test_time_matrix_periods():

@@ -120,14 +120,68 @@ def validate_coverage(preflight_path, ledger_path, time_matrix_path, theme_matri
             errors.append(f'{g["gap_id"]} unchanged but no remaining_gap')
 
     # 11. Backlog validation
+    # Only tasks not marked completed count toward active P0/P1 limits
+    def _is_active(t):
+        return t.get('research_status', 'active') != 'completed'
     for task in backlog:
         if task['research_priority'] == 'P0' and task['coverage_status'] not in ('missing', 'partial'):
             errors.append(f'P0 task {task["research_task_id"]} not from missing/partial')
-    p0p1 = [t for t in backlog if t['research_priority'] in ('P0', 'P1')]
-    if len(p0p1) > 8:
-        errors.append(f'P0+P1 = {len(p0p1)} > 8')
+    active_p0p1 = [t for t in backlog if t['research_priority'] in ('P0', 'P1') and _is_active(t)]
+    if len(active_p0p1) > 8:
+        errors.append(f'Active P0+P1 = {len(active_p0p1)} > 8')
     if len(backlog) > 15:
         errors.append(f'Total tasks = {len(backlog)} > 15')
+
+    # Active P0 uniqueness (v2/v3): v2 expects exactly 1 active P0 (RT03); v3 expects 0
+    active_p0 = [t for t in backlog if _is_active(t) and t.get('research_priority') == 'P0']
+    next_active_p0 = active_p0[0]['research_task_id'] if len(active_p0) == 1 else 'N/A'
+    cov_version = preflight.get('coverage_version', '')
+    if cov_version == 'v2' and len(active_p0) != 1:
+        errors.append(f'Active P0 count != 1: {[t["research_task_id"] for t in active_p0]}')
+    if cov_version == 'v3' and len(active_p0) != 0:
+        errors.append(f'v3 active P0 count != 0: {[t["research_task_id"] for t in active_p0]}')
+
+    # RT02 status checks (v2/v3)
+    rt02 = next((t for t in backlog if t.get('research_task_id') == 'RT02'), {})
+    rt02_status = rt02.get('research_status', '')
+    rt02_effect = rt02.get('coverage_effect', '')
+    if cov_version in ('v2', 'v3'):
+        if rt02_status != 'completed':
+            errors.append('RT02 not marked completed')
+        if rt02.get('resolution_type') != 'formal_evidence_import':
+            errors.append('RT02 resolution_type wrong')
+        if rt02_effect != 'narrowed_not_resolved':
+            errors.append('RT02 coverage_effect should be narrowed_not_resolved')
+
+    # RT03 status checks (v3)
+    rt03 = next((t for t in backlog if t.get('research_task_id') == 'RT03'), {})
+    rt03_status = rt03.get('research_status', '')
+    rt03_effect = rt03.get('coverage_effect', '')
+    if cov_version == 'v3':
+        if rt03_status != 'completed':
+            errors.append('RT03 not marked completed')
+        if rt03.get('resolution_type') != 'formal_evidence_import':
+            errors.append('RT03 resolution_type wrong')
+        if rt03_effect != 'narrowed_not_resolved':
+            errors.append('RT03 coverage_effect should be narrowed_not_resolved')
+        # P1 tasks must not be upgraded to P0
+        for t in backlog:
+            if _is_active(t) and t.get('research_priority') == 'P0':
+                errors.append(f'v3 has active P0: {t["research_task_id"]}')
+
+    # DPP integration gap must not be resolved
+    for g in gap_rec:
+        if g.get('gap_id') == 'gap_dpp_joint_campaign' and g.get('current_status') == 'resolved':
+            errors.append('DPP integration gap marked resolved')
+        if '谢龙介' in g.get('v2_gap_text', '') and g.get('current_status') == 'resolved':
+            errors.append('Hsieh organization gap marked resolved')
+        if g.get('gap_id') == 'gap_kmt_tpp' and g.get('current_status') == 'resolved':
+            errors.append('KMT-TPP gap marked resolved')
+
+    # v3 snapshot readiness must not be ready without justification
+    v3_ready = 'not_ready'
+    if cov_version == 'v3' and active_p0 and active_p0[0].get('research_task_id') == 'RT03':
+        pass  # RT03 pending keeps v3 not_ready
 
     # 12. Formal data unchanged
     if db_path:
@@ -165,6 +219,13 @@ def validate_coverage(preflight_path, ledger_path, time_matrix_path, theme_matri
 
     coverage_ready = len(errors) == 0
 
+    # P1 tasks
+    active_p1 = [t for t in backlog if _is_active(t) and t.get('research_priority') == 'P1']
+    next_recommended = ''
+    if cov_version == 'v3':
+        p1_ordered = sorted(active_p1, key=lambda t: t.get('active_order', 999))
+        next_recommended = p1_ordered[0]['research_task_id'] if p1_ordered else ''
+
     return {
         'coverage_ready': coverage_ready,
         'errors': errors,
@@ -175,8 +236,20 @@ def validate_coverage(preflight_path, ledger_path, time_matrix_path, theme_matri
         'poll_cutoff': poll_cutoff,
         'time_period_count': len(periods),
         'time_theme_count': len(themes),
-        'P0_plus_P1_count': len(p0p1),
+        'P0_plus_P1_count': len(active_p0p1),
+        'active_p0_count': len(active_p0),
+        'active_p1_count': len(active_p1),
+        'next_active_p0': next_active_p0,
+        'next_recommended_task_id': next_recommended,
         'total_task_count': len(backlog),
+        'coverage_version': preflight.get('coverage_version', ''),
+        'active_snapshot': preflight.get('active_snapshot', ''),
+        'rt02_status': rt02_status,
+        'rt02_coverage_effect': rt02_effect,
+        'rt03_status': rt03_status,
+        'rt03_coverage_effect': rt03_effect,
+        'v3_snapshot_ready': v3_ready,
+        'v1_unchanged': preflight.get('v1_unchanged', True),
     }
 
 def main():

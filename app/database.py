@@ -14,6 +14,7 @@ class Database:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self._db_path))
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._migrate_article_columns()
 
     def close(self) -> None:
         if self._conn is not None:
@@ -37,7 +38,10 @@ class Database:
                 url TEXT NOT NULL UNIQUE,
                 published_at TEXT,
                 fetched_at TEXT NOT NULL,
-                position INTEGER NOT NULL
+                position INTEGER NOT NULL,
+                summary TEXT,
+                summary_source TEXT,
+                summary_attempted_at TEXT
             )
         """)
         self.conn.execute("""
@@ -54,6 +58,23 @@ class Database:
         """)
         self.conn.commit()
 
+    def _migrate_article_columns(self) -> None:
+        """Add summary columns to databases created before the feature."""
+        table = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='articles'"
+        ).fetchone()
+        if not table:
+            return
+        cols = [row[1] for row in self.conn.execute("PRAGMA table_info(articles)")]
+        for col, ddl in (
+            ("summary", "summary TEXT"),
+            ("summary_source", "summary_source TEXT"),
+            ("summary_attempted_at", "summary_attempted_at TEXT"),
+        ):
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE articles ADD COLUMN {ddl}")
+        self.conn.commit()
+
     def article_exists(self, url: str) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM articles WHERE url = ?", (url,)
@@ -65,8 +86,9 @@ class Database:
             """
             INSERT OR IGNORE INTO articles
                 (source_id, source_name, category, title, url,
-                 published_at, fetched_at, position)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 published_at, fetched_at, position, summary, summary_source,
+                 summary_attempted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 article.source_id,
@@ -77,6 +99,9 @@ class Database:
                 article.published_at.isoformat() if article.published_at else None,
                 article.fetched_at.isoformat(),
                 article.position,
+                article.summary,
+                article.summary_source,
+                article.summary_attempted_at.isoformat() if article.summary_attempted_at else None,
             ),
         )
         self.conn.commit()
@@ -88,8 +113,9 @@ class Database:
                 """
                 INSERT OR IGNORE INTO articles
                     (source_id, source_name, category, title, url,
-                     published_at, fetched_at, position)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     published_at, fetched_at, position, summary, summary_source,
+                     summary_attempted_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     article.source_id,
@@ -100,6 +126,9 @@ class Database:
                     article.published_at.isoformat() if article.published_at else None,
                     article.fetched_at.isoformat(),
                     article.position,
+                    article.summary,
+                    article.summary_source,
+                    article.summary_attempted_at.isoformat() if article.summary_attempted_at else None,
                 ),
             )
             if cursor.rowcount > 0:
@@ -110,7 +139,8 @@ class Database:
     def get_articles_since(self, time: datetime) -> list[Article]:
         rows = self.conn.execute(
             "SELECT source_id, source_name, category, title, url, "
-            "published_at, fetched_at, position "
+            "published_at, fetched_at, position, summary, summary_source, "
+            "summary_attempted_at "
             "FROM articles WHERE fetched_at >= ? "
             "ORDER BY category, position, published_at",
             (time.isoformat(),),
@@ -125,9 +155,40 @@ class Database:
                 published_at=datetime.fromisoformat(row[5]) if row[5] else None,
                 fetched_at=datetime.fromisoformat(row[6]),
                 position=row[7],
+                summary=row[8],
+                summary_source=row[9],
+                summary_attempted_at=datetime.fromisoformat(row[10]) if row[10] else None,
             )
             for row in rows
         ]
+
+    def update_article_summaries(
+        self, summaries: dict[str, str], source: str = "llm", attempted_at=None
+    ) -> None:
+        """Write generated summaries back to the database by URL."""
+        for url, summary in summaries.items():
+            self.conn.execute(
+                "UPDATE articles SET summary = ?, summary_source = ?, "
+                "summary_attempted_at = ? WHERE url = ?",
+                (
+                    summary,
+                    source,
+                    attempted_at.isoformat() if attempted_at else None,
+                    url,
+                ),
+            )
+        self.conn.commit()
+
+    def mark_summary_attempted(self, urls: list[str], attempted_at=None) -> None:
+        """Record a failed summary attempt (negative cache for retries)."""
+        attempted_at = attempted_at or datetime.now()
+        for url in urls:
+            self.conn.execute(
+                "UPDATE articles SET summary_attempted_at = ? "
+                "WHERE url = ? AND summary IS NULL",
+                (attempted_at.isoformat(), url),
+            )
+        self.conn.commit()
 
     def count_articles(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) FROM articles").fetchone()

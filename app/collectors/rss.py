@@ -2,6 +2,7 @@ from datetime import datetime
 import email.utils
 
 from ..time_utils import TAIPEI
+from ..summarizer import rss_summary_from_entry
 import feedparser
 
 from ..models import Article
@@ -34,6 +35,7 @@ class RSSCollector(BaseCollector):
                 except (ValueError, TypeError, OverflowError):
                     if entry.get("published_parsed"):
                         published = datetime(*entry.published_parsed[:6], tzinfo=TAIPEI)
+            summary = rss_summary_from_entry(entry)
             articles.append(Article(
                 source_id=self.source_id,
                 source_name=self.source_name,
@@ -43,5 +45,7 @@ class RSSCollector(BaseCollector):
                 published_at=published,
                 fetched_at=now,
                 position=i + 1,
+                summary=summary,
+                summary_source="rss" if summary else None,
             ))
         return articles

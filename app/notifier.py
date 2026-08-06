@@ -140,55 +140,11 @@ class FeishuNotifier(Notifier):
             logger.warning("Feishu credentials not configured, skipping highlight card")
             return False
 
-        critical_count = sum(1 for _, r in highlights if r.level == "critical")
-        important_count = sum(1 for _, r in highlights if r.level == "important")
-        total = len(highlights)
-        has_critical = critical_count > 0
-
-        # Build card JSON
-        title_text = "????????"
-        header_template = "red" if has_critical else "orange"
-        item_lines = []
-
-        for article, result in highlights:
-            pfx = "????" if result.level == "critical" else "????"
-            safe_title = article.title.replace("\n", " ").replace("\r", "")
-            item_lines.append(pfx + safe_title)
-
-        content_md = "\n".join(item_lines)
-
-        # Bottom summary
-        summary_parts = []
-        if critical_count > 0:
-            summary_parts.append(f"\u91cd\u5927{critical_count}\u6761")
-        if important_count > 0:
-            summary_parts.append(f"\u91cd\u70b9{important_count}\u6761")
-        summary_line = "\u3001".join(summary_parts) + "\uff0c\u8be6\u60c5\u89c1\u672c\u671fWord\u7b80\u62a5\u3002"
-
-        # Build Feishu interactive card structure
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": title_text},
-                "template": header_template,
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "text": {"tag": "lark_md", "content": content_md},
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "note",
-                    "elements": [
-                        {"tag": "plain_text", "content": summary_line}
-                    ],
-                },
-            ],
-        }
-
         try:
-            from .feishu import send_card as _send_card
+            from .feishu import build_highlight_card, send_card as _send_card
+            critical_count = sum(1 for _, r in highlights if r.level == "critical")
+            important_count = sum(1 for _, r in highlights if r.level == "important")
+            card = build_highlight_card(highlights)
             _send_card(card, self._app_id, self._app_secret, self._chat_id)
             logger.info("Highlight card sent (critical=%d, important=%d)", critical_count, important_count)
             return True

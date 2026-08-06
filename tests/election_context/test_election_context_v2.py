@@ -21,10 +21,10 @@ class TestBootstrap:
         assert ok
         assert stats['elections'] == 1
         assert stats['actors'] == 6
-        assert stats['sources'] == 80
-        assert stats['events'] == 28
-        assert stats['snapshots'] == 3
-        assert stats['fts'] == 28
+        assert stats['sources'] == 112
+        assert stats['events'] == 41
+        assert stats['snapshots'] == 4
+        assert stats['fts'] == 41
         os.unlink(p)
 
     def test_second_import_idempotent(self):
@@ -40,7 +40,7 @@ class TestBootstrap:
         _active = _conn.execute("SELECT COUNT(*) FROM election_state_snapshots WHERE snapshot_status='active'").fetchone()[0]
         _superseded = _conn.execute("SELECT COUNT(*) FROM election_state_snapshots WHERE snapshot_status='superseded'").fetchone()[0]
         assert _active == 1, f'active: {_active}'
-        assert _superseded == 2, f'superseded: {_superseded}'
+        assert _superseded == 3, f'superseded: {_superseded}'
         _conn.close()
         os.unlink(p)
 

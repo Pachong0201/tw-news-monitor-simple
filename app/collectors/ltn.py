@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from ..time_utils import TAIPEI
 from .base import BaseCollector
 from ..models import Article
+from ..summarizer import rss_summary_from_entry
 import feedparser
 
 LTN_ALLOWED_HOSTS = frozenset({"news.ltn.com.tw", "ec.ltn.com.tw"})
@@ -59,6 +60,7 @@ class LtnRSSCollector(BaseCollector):
                 except (ValueError, TypeError, OverflowError):
                     pass
 
+            summary = rss_summary_from_entry(entry)
             articles.append(Article(
                 source_id=self.source_id,
                 source_name=self.source_name,
@@ -68,6 +70,8 @@ class LtnRSSCollector(BaseCollector):
                 published_at=published,
                 fetched_at=now,
                 position=i + 1,
+                summary=summary,
+                summary_source="rss" if summary else None,
             ))
 
         return articles

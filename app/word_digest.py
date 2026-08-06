@@ -103,6 +103,13 @@ def build_word_digest(articles: list[Article], output_dir: Path, generated_at: d
                 run = p.add_run(display_title)
                 run.bold = True
                 run.font.size = Pt(12)
+
+                if article.summary:
+                    p = doc.add_paragraph()
+                    run = p.add_run(f"梗概：{article.summary}")
+                    run.font.size = Pt(10)
+                    run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+                    run.italic = True
                 
                 p = doc.add_paragraph()
                 run = p.add_run(f"来源：{article.source_name}")
@@ -165,6 +172,13 @@ def build_word_digest(articles: list[Article], output_dir: Path, generated_at: d
                 run = p.add_run(display_title)
                 run.bold = True
                 run.font.size = Pt(12)
+
+                if article.summary:
+                    p = doc.add_paragraph()
+                    run = p.add_run(f"梗概：{article.summary}")
+                    run.font.size = Pt(10)
+                    run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+                    run.italic = True
                 
                 p = doc.add_paragraph()
                 run = p.add_run(f"来源：{article.source_name}")

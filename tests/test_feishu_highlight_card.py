@@ -303,3 +303,18 @@ class TestMainFlowCardLogic:
         has_delivery_articles = True  # e.g., fresh_articles or catch_up_eligible
         assert has_delivery_articles is True
         # select_highlights([]) is only called AFTER Word is generated
+
+    def test_card_sent_directly_via_app_bot_not_notifier(self):
+        """Card must be sent via Feishu App bot regardless of NOTIFIER type.
+
+        With NOTIFIER=console the notifier's send_highlight_card returns
+        False, which previously made the highlight card silently disappear.
+        """
+        from pathlib import Path
+        main_file = Path(__file__).resolve().parent.parent / "app" / "main.py"
+        content = main_file.read_text(encoding="utf-8")
+        assert "send_card(card, fs_id, fs_secret, fs_chat)" in content
+        idx = content.index("send_card(card, fs_id, fs_secret, fs_chat)")
+        card_block = content[max(0, idx - 500): idx + 250]
+        # Card sending must not be delegated to the selected notifier
+        assert "notifier.send_highlight_card" not in card_block

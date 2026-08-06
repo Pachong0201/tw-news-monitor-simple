@@ -137,3 +137,12 @@ sources:
   name: 行政院
   type: rss
   url: https://www.ey.gov.tw/RSS_Content.aspx?ModuleType=4
+# 西藏之聲（Voice of Tibet，印度達蘭薩拉）中文新聞
+# 注意：cn.vot.org 在當前監測環境無法連通（HTTP 000），RSS 地址未經實測。
+# 待確認可用 RSS 地址後，把 enabled 改為 true 即可啟用。
+- category: international
+  enabled: false
+  id: vot_chinese
+  name: 西藏之聲
+  type: rss
+  url: https://cn.vot.org/rss.xml

@@ -12,3 +12,6 @@ class Article:
     published_at: datetime | None
     fetched_at: datetime
     position: int
+    summary: str | None = None
+    summary_source: str | None = None
+    summary_attempted_at: datetime | None = None

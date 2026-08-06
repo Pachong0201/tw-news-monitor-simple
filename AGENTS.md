@@ -39,7 +39,9 @@ class in `app/collectors/` that extends `BaseCollector` and implements
 2. Skip empty titles / URLs.
 3. Normalize URL before dedup.
 4. Do NOT fetch article body.
-5. Do NOT filter by keywords.
+5. Do NOT filter by keywords inside collectors. Out-of-scope filtering
+   (e.g. social trivia in economy feeds) is handled centrally by
+   `app/content_filter.py` + `config/content_filter.yaml` before saving.
 6. Do NOT classify as breaking news.
 7. Single source failure must not stop others.
 8. Set timeout per request.

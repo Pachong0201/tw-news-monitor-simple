@@ -10,16 +10,25 @@ import json
 import yaml
 
 from .collectors import RSSCollector, UDNCollector, EBCCollector, CNAHtmlCollector, LtnRSSCollector, PresidentCollector
+from .content_filter import load_content_filter, filter_articles
 from .database import Database
 from .digest import build_digest
 from .lock import InstanceLock
 from .notifier import create_notifier
-from .feishu import send_document
+from .feishu import build_highlight_card, send_card, send_document
 from .word_digest import build_word_digest
+from .summarizer import enrich_articles_with_summaries
 from .freshness import FreshnessResult, filter_fresh_articles
 from .source_registry import is_official_source, get_source_info, get_official_sources
 from .time_utils import TAIPEI
-from .importance import classify_articles, importance_summary, load_rules, select_highlights
+from .importance import (
+    classify_articles,
+    finalize_importance,
+    importance_summary,
+    load_rules,
+    select_highlights,
+    validate_rules_config,
+)
 from .article_identity import article_identity_key, deduplicate_articles_by_identity
 
 logger = logging.getLogger(__name__)
@@ -147,12 +156,22 @@ def deduplicate_articles_by_url(articles):
     return unique, dups
 
 
+def enrich_summaries_safe(articles, db=None) -> None:
+    """Best-effort summary enrichment; never blocks Word generation."""
+    try:
+        enrich_articles_with_summaries(articles, db)
+    except Exception as exc:
+        logger.warning("Summary enrichment failed: %s", exc)
+
+
 def collect_all(
     sources: list[dict], db: Database,
+    content_filter_config: dict | None = None,
 ) -> tuple[list, int, int, list[str]]:
     """Collect news, dedup by URL, save new ones.
 
-    Returns (all_inserted, total_fetched, dup_count, failed_sources).
+    Returns (inserted, total_fetched, dup_count, failed_sources,
+             run_removed, hist_id_dups, filtered_count).
     """
     all_raw: list = []
     total_fetched = 0
@@ -202,18 +221,36 @@ def collect_all(
             hist_id_dups.append(a)
         else:
             candidates.append(a)
+
+    # Content filter: exclude out-of-scope news (e.g. social trivia in
+    # economy feeds) before saving when mode=drop_before_save.
+    filtered_count = 0
+    if content_filter_config and content_filter_config.get("enabled", False):
+        kept_candidates, blocked = filter_articles(candidates, content_filter_config)
+        filtered_count = len(blocked)
+        if blocked:
+            logger.info(
+                "Content filter blocked %d/%d candidates: %s",
+                len(blocked), len(candidates),
+                [a.title[:40] for a in blocked[:5]],
+            )
+        candidates = kept_candidates
+
     inserted = db.save_articles(candidates)
 
     run_removed = len(run_dups) + len(identity_run_dups)
-    dup_count = total_fetched - len(inserted)
+    dup_count = total_fetched - len(inserted) - filtered_count
     logger.info(
         "Total: fetched=%d, run_url_removed=%d, run_id_removed=%d, "
-        "hist_url_dup=%d, hist_id_dup=%d, inserted=%d, failed=%d",
+        "hist_url_dup=%d, hist_id_dup=%d, filtered=%d, inserted=%d, failed=%d",
         total_fetched, len(run_dups), len(identity_run_dups),
         len(hist_url_dups), len(hist_id_dups),
-        len(inserted), len(failed),
+        filtered_count, len(inserted), len(failed),
     )
-    return inserted, total_fetched, dup_count, failed, run_removed, len(hist_id_dups)
+    return (
+        inserted, total_fetched, dup_count, failed,
+        run_removed, len(hist_id_dups), filtered_count,
+    )
 
 
 def show_db_stats(db: Database) -> None:
@@ -345,6 +382,20 @@ def main() -> None:
         importance_rules_config = load_rules(importance_rules_path)
     else:
         importance_rules_config = {'enabled': False, 'thresholds': {}, 'rules': []}
+    importance_errors = validate_rules_config(importance_rules_config)
+    if importance_errors:
+        msg = "重要度规则配置无效：" + "；".join(importance_errors)
+        logger.error(msg)
+        print(msg)
+        return
+    content_filter_config = load_content_filter(
+        project_root / "config" / "content_filter.yaml"
+    )
+    if content_filter_config.get("enabled", False):
+        logger.info(
+            "Content filter enabled (mode=%s)",
+            content_filter_config.get("mode", "drop_before_save"),
+        )
     db_path_str = os.getenv("NEWS_DB_PATH", "")
     if db_path_str:
         db_path = Path(db_path_str)
@@ -365,19 +416,23 @@ def main() -> None:
         db = Database(db_path)
         db.connect()
         db.create_tables()
-        inserted, total, dup, failed, run_removed, hist_id_dup = collect_all(sources, db)
+        inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
+            sources, db, content_filter_config
+        )
         print()
         print("初始化完成：")
         print(f"  本轮采集：{total}条")
         print(f"  新增入库：{len(inserted)}条")
         print(f"  重复跳过：{dup}条")
+        if filtered_count:
+            print(f"  内容过滤：{filtered_count}条")
         if failed:
             print(f"\n失败来源：{len(failed)}个（{', '.join(failed)}）")
         else:
             print("  失败来源：0个")
         logger.info(
-            "Bootstrap done: total=%d, new=%d, dup=%d, failed=%d",
-            total, len(inserted), dup, len(failed),
+            "Bootstrap done: total=%d, new=%d, dup=%d, filtered=%d, failed=%d",
+            total, len(inserted), dup, filtered_count, len(failed),
         )
         db.close()
         logger.info("Taiwan News Monitor ended")
@@ -490,6 +545,7 @@ def main() -> None:
             db.close()
             return
         output_dir = project_root / "data" / "reports"
+        enrich_summaries_safe(articles, db)
         output_path = build_word_digest(articles, output_dir, generated_at=now)
         test_name = f"\u53f0\u6e7e\u65b0\u95fb\u76d1\u6d4b_\u6d4b\u8bd5_{now.strftime('%Y-%m-%d_%H%M')}.docx"
         test_path = output_path.parent / test_name
@@ -541,7 +597,9 @@ def main() -> None:
         db = Database(tmp_path)
         db.connect()
         db.create_tables()
-        inserted, total, dup, failed, run_removed, hist_id_dup = collect_all(sources, db)
+        inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
+            sources, db, content_filter_config
+        )
         now = datetime.now(TAIPEI)
         print()
         if inserted:
@@ -551,6 +609,8 @@ def main() -> None:
                 f"新增入库：{len(inserted)}条\n"
                 f"重复跳过：{dup}条\n"
             )
+            if filtered_count:
+                digest += f"内容过滤：{filtered_count}条\n"
             if failed:
                 digest += f"失败来源：{len(failed)}个（{', '.join(failed)}）\n"
             else:
@@ -559,6 +619,8 @@ def main() -> None:
         else:
             digest = build_digest([], now)
             digest += f"\n收集来源：{len(sources)}个\n"
+            if filtered_count:
+                digest += f"内容过滤：{filtered_count}条\n"
             if failed:
                 digest += f"失败来源：{len(failed)}个（{', '.join(failed)}）\n"
             print(digest)
@@ -634,6 +696,7 @@ def main() -> None:
             db.close()
             return
         output_dir = project_root / "data" / "reports"
+        enrich_summaries_safe(articles, db)
         output_path = build_word_digest(articles, output_dir, generated_at=now)
         print(f"Word简报已生成：\n{output_path}")
         logger.info("Word export complete: %s", output_path)
@@ -643,7 +706,7 @@ def main() -> None:
     # ---- Backfill Run -------------------------------------------------
     if args.backfill_run:
         if not db_path.exists():
-            print("??????????? python -m app.main --bootstrap")
+            print("数据库不存在，请先运行 python -m app.main --bootstrap")
             return
         db = Database(db_path)
         db.connect()
@@ -658,8 +721,8 @@ def main() -> None:
             try:
                 marker = json.loads(marker_path.read_text(encoding="utf-8"))
                 if marker.get("sent_at") and marker.get("feishu_result") == "success":
-                    print(f"?? {batch_id} ??????????{marker['sent_at']}")
-                    print("???????????????????")
+                    print(f"批次 {batch_id} 已于 {marker['sent_at']} 成功发送。")
+                    print("如需重发，请先删除标记文件：")
                     print(f"  Remove-Item '{marker_path}'")
                     db.close()
                     return
@@ -679,7 +742,7 @@ def main() -> None:
             batch_dt = datetime.strptime(batch_id, "%Y%m%d_%H%M")
             batch_dt = batch_dt.replace(tzinfo=TAIPEI)
         except (ValueError, TypeError):
-            print(f"????????: {batch_id}?????? YYYYMMDD_HHMM")
+            print(f"批次格式无效: {batch_id}，应为 YYYYMMDD_HHMM")
             db.close()
             return
 
@@ -691,7 +754,7 @@ def main() -> None:
         try:
             rows = db.conn.execute(
                 "SELECT source_id, source_name, category, title, url, "
-                "published_at, fetched_at, position "
+                "published_at, fetched_at, position, summary, summary_attempted_at "
                 "FROM articles WHERE fetched_at >= ? AND fetched_at <= ? "
                 "ORDER BY published_at DESC",
                 (batch_start.isoformat(), batch_end.isoformat()),
@@ -704,16 +767,20 @@ def main() -> None:
                     published_at=datetime.fromisoformat(row[5]) if row[5] else None,
                     fetched_at=datetime.fromisoformat(row[6]),
                     position=row[7],
+                    summary=row[8],
+                    summary_attempted_at=(
+                        datetime.fromisoformat(row[9]) if row[9] else None
+                    ),
                 )
                 for row in rows
             ]
         except Exception as e:
-            print(f"???????: {e}")
+            print(f"查询失败: {e}")
             db.close()
             return
 
         if not articles:
-            print(f"??? {batch_id} ??????????")
+            print(f"批次 {batch_id} 窗口内没有文章。")
             db.close()
             return
 
@@ -724,7 +791,7 @@ def main() -> None:
             age = "N/A"
             if a.published_at:
                 age_mins = int((now.astimezone(TAIPEI) - a.published_at.astimezone(TAIPEI)).total_seconds() / 60)
-                age = f"{age_mins}??"
+                age = f"{age_mins}分钟"
             print(f"{i}. ID={a.url[:40]} / {a.source_name} / {a.published_at} / {age}")
             print(f"   {a.title[:60]}")
             print()
@@ -741,6 +808,7 @@ def main() -> None:
             all_catch_up = {a.url for a in articles}
             output_dir = project_root / "data" / "reports"
             output_dir.mkdir(parents=True, exist_ok=True)
+            enrich_summaries_safe(articles, db)
             word_path = build_word_digest(
                 articles, output_dir, generated_at=now,
                 catch_up_urls=all_catch_up,
@@ -756,7 +824,7 @@ def main() -> None:
             fs_chat = _os2.getenv("FEISHU_CHAT_ID", "").strip()
             feishu_result = "not_configured"
             if fs_id and fs_secret and fs_chat:
-                caption = "????????????"
+                caption = "【台湾新闻监测｜补发简报】"
                 send_document(word_path, fs_id, fs_secret, fs_chat, caption=caption)
                 feishu_result = "success"
                 print("Feishu: sent successfully")
@@ -787,7 +855,7 @@ def main() -> None:
     lock_path = project_root / "data" / "monitor.lock"
     lock = InstanceLock(lock_path)
     if not lock.acquire():
-        msg = "??????????????????"
+        msg = "已有另一个采集实例在运行，本次跳过。"
         print(msg)
         logger.warning("Lock acquisition failed, another instance is running")
         return
@@ -798,7 +866,9 @@ def main() -> None:
         db.connect()
         db.create_tables()
 
-        inserted, total, dup, failed, run_removed, hist_id_dup = collect_all(sources, db)
+        inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
+            sources, db, content_filter_config
+        )
         now = datetime.now(TAIPEI)
 
         notifier = create_notifier()
@@ -860,29 +930,39 @@ def main() -> None:
         importance_results = classify_articles(
             delivery_articles, importance_rules_config
         )
-        logger.info(importance_summary(importance_results))
+        pre_cap_summary = importance_summary(importance_results)
+        importance_results = finalize_importance(
+            importance_results, importance_rules_config
+        )
+        logger.info(
+            "%s | after cap: %s",
+            pre_cap_summary,
+            importance_summary(importance_results),
+        )
 
         if fresh_articles or catch_up_eligible:
             digest = build_digest(fresh_articles + catch_up_eligible, now)
             stats = (
-                f"\n???????{total}?"
+                f"\n本轮收集：{total}条"
             )
             if failed:
-                _sep = "?"
-                stats += f"\n???????{len(failed)}??{_sep.join(failed)}?"
+                _sep = "、"
+                stats += f"\n失败来源：{len(failed)}个（{_sep.join(failed)}）"
             stats += (
-                f"\n??URL?????{run_removed}?"
-                f"\n????????{db_existing}?"
-                f"\n???????{len(inserted)}?"
-                f"\n??????{len(fresh_articles)}?"
-                f"\n???????{len(catch_up_eligible)}?"
-                f"\n?????{len(stale_articles)}?"
-                f"\n???????{len(unknown_articles)}?"
-                f"\n???????{len(future_articles)}?"
-                f"\n????Word?{final_word_count}?"
+                f"\nURL去重：{run_removed}条"
+                f"\n历史去重：{db_existing}条"
+                f"\n新增入库：{len(inserted)}条"
+                f"\n内容过滤：{filtered_count}条"
+                f"\n正常新闻：{len(fresh_articles)}条"
+                f"\n补发新闻：{len(catch_up_eligible)}条"
+                f"\n过期跳过：{len(stale_articles)}条"
+                f"\n未知时间：{len(unknown_articles)}条"
+                f"\n未来时间：{len(future_articles)}条"
+                f"\n简报Word：{final_word_count}条"
             )
             digest += stats
             notifier.send_long(digest)
+            enrich_summaries_safe(delivery_articles, db)
             # Auto-generate Word digest for delivery articles
             try:
                 output_dir = project_root / "data" / "reports"
@@ -915,13 +995,24 @@ def main() -> None:
                                     importance_results, max_highlights=max_h,
                                 )
                                 if highlights:
-                                    sent = notifier.send_highlight_card(highlights)
-                                    if sent:
-                                        logger.info("Highlight card sent (items=%d, critical=%d)",
-                                                    len(highlights),
-                                                    sum(1 for _, r in highlights if r.level == "critical"))
-                                    else:
-                                        logger.warning("Highlight card send attempted but failed")
+                                    # Send directly via the Feishu App bot so the
+                                    # card works even when NOTIFIER=console
+                                    # (ConsoleNotifier.send_highlight_card returns
+                                    # False by design and would silently skip it).
+                                    card = build_highlight_card(
+                                        highlights,
+                                        title=card_cfg.get("title", "本期重点新闻提示"),
+                                        show_summary=card_cfg.get("show_summary", False),
+                                        show_source=card_cfg.get("show_source", False),
+                                        show_published_at=card_cfg.get("show_published_at", False),
+                                    )
+                                    send_card(card, fs_id, fs_secret, fs_chat)
+                                    logger.info(
+                                        "Highlight card sent via Feishu App bot "
+                                        "(items=%d, critical=%d)",
+                                        len(highlights),
+                                        sum(1 for _, r in highlights if r.level == "critical"),
+                                    )
                         else:
                             logger.info("Feishu send disabled by DISABLE_FEISHU_SEND")
                 except Exception as fs_err:
@@ -936,14 +1027,14 @@ def main() -> None:
             if inserted:
                 if baseline_excluded and not catch_up_eligible:
                     print(
-                        f"\n??????{len(inserted)}?????????????????????????"
+                        f"\n新增{len(inserted)}条，但无符合交付条件的新闻（详情见日志）："
                         f"\n  Fresh=0, Catch_up_ineligible={len(baseline_excluded)}, "
                         f"Stale={len(stale_articles)}, "
                         f"Unknown={len(unknown_articles)}, Future={len(future_articles)}"
                     )
                 else:
                     print(
-                        f"\n??????{len(inserted)}?????????????????????"
+                        f"\n新增{len(inserted)}条，但无符合交付条件的新闻："
                         f"\n  Fresh=0, Stale={len(stale_articles)}, "
                         f"Unknown={len(unknown_articles)}, Future={len(future_articles)}"
                     )
@@ -953,7 +1044,7 @@ def main() -> None:
                     len(stale_articles), len(unknown_articles), len(future_articles),
                 )
             else:
-                print("?????????")
+                print("本轮没有新增新闻。")
                 logger.info("No new articles inserted")
     except SystemExit:
         raise
