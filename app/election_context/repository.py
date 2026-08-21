@@ -5,6 +5,18 @@ from pathlib import Path
 from typing import Any
 from . import validate_fact_status, validate_significance
 
+
+def _json_dumps(v):
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        try:
+            json.loads(v)
+            return v
+        except json.JSONDecodeError:
+            return json.dumps(v, ensure_ascii=False)
+    return json.dumps(v, ensure_ascii=False)
+
 DB_PATH = Path(__file__).resolve().parent.parent.parent / 'data' / 'election_context.db'
 
 CREATE_ELECTIONS = '''
@@ -289,6 +301,106 @@ class ElectionContextRepository:
              actors_json, issues_json, dims_json, analysis_json, now, now))
         self.conn.commit()
         return eid
+
+    def save_poll(self, poll: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO election_polls
+               (poll_id, election_id, poll_type, fact_status, methodology_complete,
+                verification_tier, recommended_disposition, canonical_origin,
+                publication_json, fieldwork_json, methodology_json, population_json,
+                limitations_json, usable_for_poll_trend, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                poll["poll_id"],
+                poll.get("election_id", ""),
+                poll.get("poll_type", ""),
+                poll.get("fact_status", "poll_result"),
+                int(bool(poll.get("methodology_complete", 0))),
+                poll.get("verification_tier", ""),
+                poll.get("recommended_disposition", ""),
+                poll.get("canonical_origin", ""),
+                _json_dumps(poll.get("publication_json")),
+                _json_dumps(poll.get("fieldwork_json")),
+                _json_dumps(poll.get("methodology_json")),
+                _json_dumps(poll.get("population_json")),
+                _json_dumps(poll.get("limitations_json")),
+                int(bool(poll.get("usable_for_poll_trend", 0))),
+                poll.get("created_at", ""),
+                poll.get("updated_at", ""),
+            ),
+        )
+        self.conn.commit()
+
+    def rebuild_fts(self):
+        self.conn.execute("DROP TABLE IF EXISTS election_events_fts")
+        self.conn.execute(CREATE_FTS)
+        events = self.conn.execute(
+            "SELECT rowid, title, fact_summary, actors_json, issues_json FROM election_events"
+        ).fetchall()
+        for e in events:
+            try:
+                self.conn.execute(
+                    "INSERT INTO election_events_fts(rowid, title, fact_summary, actors, issues) "
+                    "VALUES (?,?,?,?,?)",
+                    (e["rowid"], e["title"], e["fact_summary"], e["actors_json"], e["issues_json"]),
+                )
+            except Exception:
+                pass
+        self.conn.commit()
+
+    def save_poll_question(self, q: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO poll_questions
+               (poll_id, question_id, question_type, candidate_set_json, base_population,
+                population_filter, trend_eligible, trend_scope, comparable_group_key,
+                note, question_order)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                q["poll_id"],
+                q["question_id"],
+                q.get("question_type", ""),
+                _json_dumps(q.get("candidate_set_json")),
+                q.get("base_population", ""),
+                q.get("population_filter", ""),
+                int(bool(q.get("trend_eligible", 0))),
+                q.get("trend_scope", ""),
+                q.get("comparable_group_key", ""),
+                q.get("note", ""),
+                int(q.get("question_order", 0)),
+            ),
+        )
+        self.conn.commit()
+
+    def save_poll_result(self, r: dict):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO poll_results
+               (poll_id, question_id, option_id, option_name, option_type,
+                reported_value, value, normalized_value, unit, base_population,
+                is_derived, result_order)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                r["poll_id"],
+                r["question_id"],
+                r["option_id"],
+                r.get("option_name", ""),
+                r.get("option_type", ""),
+                r.get("reported_value", ""),
+                r.get("value"),
+                r.get("normalized_value"),
+                r.get("unit", "percent"),
+                r.get("base_population", ""),
+                int(bool(r.get("is_derived", 0))),
+                int(r.get("result_order", 0)),
+            ),
+        )
+        self.conn.commit()
+
+    def link_poll_source(self, poll_id: str, source_id: str):
+        self.conn.execute(
+            "INSERT OR IGNORE INTO poll_source_links (poll_id, source_id) VALUES (?,?)",
+            (poll_id, source_id),
+        )
+        self.conn.commit()
 
     def link_event_source(self, event_id: str, source_id: str, is_primary: bool = False):
         self.conn.execute('''INSERT OR IGNORE INTO event_sources

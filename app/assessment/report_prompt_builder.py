@@ -15,11 +15,11 @@ PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 
 PROMPT_FILES = {
-    "system": "tainan_report_system_v1.txt",
-    "writer": "tainan_report_writer_v1.txt",
-    "repair": "tainan_report_repair_v1.txt",
+    "system": "tainan_report_system_v2.txt",
+    "writer": "tainan_report_writer_v2.txt",
+    "repair": "tainan_report_repair_v2.txt",
 }
-PROMPT_VERSIONS = {key: "v1.1" for key in PROMPT_FILES}
+PROMPT_VERSIONS = {key: "2.0" for key in PROMPT_FILES}
 
 
 class PromptBuildError(RuntimeError):
@@ -46,7 +46,7 @@ def prompt_hashes() -> dict[str, str]:
 
 
 def load_output_schema() -> dict:
-    path = SCHEMA_DIR / "tainan_assessment_report_v1.schema.json"
+    path = SCHEMA_DIR / "tainan_assessment_report_v2.schema.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 

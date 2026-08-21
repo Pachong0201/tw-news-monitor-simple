@@ -1,4 +1,5 @@
-from app.notifier import ConsoleNotifier, Notifier
+from app.notifier import ConsoleNotifier, Notifier, NullNotifier, RecordingNotifier
+from app.notification_candidates import NotificationCandidate
 
 
 class CaptureNotifier(Notifier):
@@ -120,6 +121,52 @@ class TestConsoleNotifier:
         """ConsoleNotifier has effectively unlimited MAX_MESSAGE_LENGTH."""
         c = ConsoleNotifier()
         assert c.MAX_MESSAGE_LENGTH == 10_000_000
+
+
+class TestEventCandidateNotifier:
+    def test_null_notifier_does_not_emit(self):
+        candidate = NotificationCandidate(
+            event_id="evt-1", canonical_url="https://example.test/1", cn_title="测试",
+            importance_level="important", score=70, relevance_reason="matched",
+            coverage_source_ids=["reuters_international"], coverage_urls=["https://example.test/1"],
+            dedup_key="event:evt-1", notifiable=True,
+        )
+        NullNotifier().send_event_candidates([candidate])
+
+    def test_recording_notifier_receives_one_structured_candidate(self):
+        candidate = NotificationCandidate(
+            event_id="evt-1", canonical_url="https://example.test/1", cn_title="测试",
+            importance_level="important", score=70, relevance_reason="matched",
+            coverage_source_ids=["reuters_international"], coverage_urls=["https://example.test/1"],
+            dedup_key="event:evt-1", notifiable=True,
+        )
+        notifier = RecordingNotifier()
+        notifier.send_event_candidates([candidate])
+        assert notifier.event_candidates == [candidate]
+        assert len(notifier.messages) == 1
+
+    def test_null_and_recording_return_explicit_success(self):
+        candidate = NotificationCandidate(
+            event_id="evt-success", canonical_url="https://example.test/success", cn_title="测试",
+            importance_level="important", score=70, relevance_reason="matched",
+            coverage_source_ids=["reuters_international"], coverage_urls=["https://example.test/success"],
+            dedup_key="event:evt-success", notifiable=True,
+        )
+        assert NullNotifier().send_event_candidates([candidate]) is True
+        assert RecordingNotifier().send_event_candidates([candidate]) is True
+
+    def test_notifier_failure_returns_false_for_dedup_gate(self):
+        class FailingNotifier(Notifier):
+            def send(self, text: str) -> bool:
+                return False
+
+        candidate = NotificationCandidate(
+            event_id="evt-fail", canonical_url="https://example.test/fail", cn_title="测试",
+            importance_level="important", score=70, relevance_reason="matched",
+            coverage_source_ids=["reuters_international"], coverage_urls=["https://example.test/fail"],
+            dedup_key="event:evt-fail", notifiable=True,
+        )
+        assert FailingNotifier().send_event_candidates([candidate]) is False
 
 
 class TestTruncateLine:

@@ -168,10 +168,10 @@ def run(
                 formal.previous_snapshot["snapshot_id"] if formal.previous_snapshot else None
             ),
             coverage_name=formal.coverage_name,
-            facts_cutoff=(formal.active_snapshot.get("state") or {}).get("coverage", {}).get("facts_cutoff")
-            or formal.coverage_preflight.get("facts_cutoff"),
-            poll_cutoff=(formal.active_snapshot.get("state") or {}).get("coverage", {}).get("poll_cutoff")
-            or formal.coverage_preflight.get("poll_cutoff"),
+            facts_cutoff=formal.coverage_preflight.get("facts_cutoff")
+            or (formal.active_snapshot.get("state") or {}).get("coverage", {}).get("facts_cutoff"),
+            poll_cutoff=formal.coverage_preflight.get("poll_cutoff")
+            or (formal.active_snapshot.get("state") or {}).get("coverage", {}).get("poll_cutoff"),
             expected_counts={
                 "formal_event_count": formal.counts["formal_event_count"],
                 "formal_source_count": formal.counts["formal_source_count"],

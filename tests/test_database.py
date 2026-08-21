@@ -155,3 +155,130 @@ class TestDatabase:
         assert len(result) == 1
         assert result[0].published_at is None
         assert result[0].title == "無時間新聞"
+
+
+# ── 国际媒体监测层 Phase I：section / language / access_level ──────
+
+
+class TestDatabasePhaseIColumns:
+    """Phase I 三列：可空、迁移、save/read 往返保真。"""
+
+    def test_create_tables_includes_new_columns(self, db):
+        """create_tables 建出的表含 section/language/access_level 列。"""
+        cols = {row[1] for row in db.conn.execute("PRAGMA table_info(articles)")}
+        for col in ("section", "language", "access_level"):
+            assert col in cols
+
+    def test_new_columns_default_to_null(self, db):
+        """不传新字段保存 → DB 中为 NULL，读回为 None。"""
+        db.save_article(make_article())
+        row = db.conn.execute(
+            "SELECT section, language, access_level FROM articles"
+        ).fetchone()
+        assert row == (None, None, None)
+        got = db.get_articles_since(datetime(2025, 1, 1))[0]
+        assert got.section is None
+        assert got.language is None
+        assert got.access_level is None
+
+    def test_save_read_roundtrip_new_fields(self, db):
+        """save_article 往返保真：新字段值完整保存并读回。"""
+        a = make_article(url="https://example.com/intl/1")
+        a.section = "world"
+        a.language = "en"
+        a.access_level = "public"
+        db.save_article(a)
+
+        got = db.get_articles_since(datetime(2025, 1, 1))[0]
+        assert got.section == "world"
+        assert got.language == "en"
+        assert got.access_level == "public"
+
+    def test_save_articles_bulk_roundtrip_new_fields(self, db):
+        """save_articles 批量往返保真，NULL 与取值混存。"""
+        arts = []
+        for i in range(3):
+            a = make_article(url=f"https://example.com/intl/{i}", position=i)
+            a.section = f"sec-{i}"
+            a.language = "en" if i % 2 == 0 else None
+            a.access_level = "public" if i % 2 == 0 else "metadata_only"
+            arts.append(a)
+        db.save_articles(arts)
+
+        by_url = {a.url: a for a in db.get_articles_since(datetime(2025, 1, 1))}
+        assert len(by_url) == 3
+        for i in range(3):
+            url = f"https://example.com/intl/{i}"
+            assert by_url[url].section == f"sec-{i}"
+            assert by_url[url].language == ("en" if i % 2 == 0 else None)
+            assert by_url[url].access_level == (
+                "public" if i % 2 == 0 else "metadata_only"
+            )
+
+    def test_old_schema_migration_preserves_old_rows(self, tmp_path):
+        """旧库（Phase I 之前 schema + 已有数据）迁移后：
+        新列被追加、旧行新列为 NULL、旧数据仍可读写、新字段可继续写入。"""
+        import sqlite3
+
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                published_at TEXT,
+                fetched_at TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                summary TEXT,
+                summary_source TEXT,
+                summary_attempted_at TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO articles (source_id, source_name, category, title, url, "
+            "published_at, fetched_at, position, summary, summary_source, "
+            "summary_attempted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("s1", "媒體", "politics", "舊聞", "https://example.com/old",
+             "2025-01-01T00:00:00", "2025-01-01T00:00:00", 1, None, None, None),
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(db_path)
+        db.connect()
+        try:
+            # 迁移后新列存在
+            cols = {row[1] for row in db.conn.execute("PRAGMA table_info(articles)")}
+            for col in ("section", "language", "access_level"):
+                assert col in cols
+            # 旧行数据完好，新列为 NULL
+            row = db.conn.execute(
+                "SELECT title, section, language, access_level FROM articles"
+            ).fetchone()
+            assert row[0] == "舊聞"
+            assert row[1:] == (None, None, None)
+            # 旧数据可读（旧行为不变）
+            got = db.get_articles_since(datetime(2000, 1, 1))
+            assert len(got) == 1
+            assert got[0].url == "https://example.com/old"
+            assert got[0].section is None
+            assert got[0].language is None
+            assert got[0].access_level is None
+            # 迁移后仍可写入新字段
+            a = make_article(url="https://example.com/new")
+            a.section = "world"
+            a.language = "en"
+            a.access_level = "public"
+            db.save_article(a)
+            got = db.get_articles_since(datetime(2000, 1, 1))
+            assert len(got) == 2
+            new_row = next(x for x in got if x.url == "https://example.com/new")
+            assert new_row.section == "world"
+            assert new_row.language == "en"
+            assert new_row.access_level == "public"
+        finally:
+            db.close()

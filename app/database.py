@@ -41,7 +41,10 @@ class Database:
                 position INTEGER NOT NULL,
                 summary TEXT,
                 summary_source TEXT,
-                summary_attempted_at TEXT
+                summary_attempted_at TEXT,
+                section TEXT,
+                language TEXT,
+                access_level TEXT
             )
         """)
         self.conn.execute("""
@@ -59,7 +62,11 @@ class Database:
         self.conn.commit()
 
     def _migrate_article_columns(self) -> None:
-        """Add summary columns to databases created before the feature."""
+        """Add columns to databases created before the feature.
+
+        Append-only migration: older databases get the newer columns added
+        (nullable, old rows keep NULL). No schema version table is used.
+        """
         table = self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='articles'"
         ).fetchone()
@@ -70,6 +77,10 @@ class Database:
             ("summary", "summary TEXT"),
             ("summary_source", "summary_source TEXT"),
             ("summary_attempted_at", "summary_attempted_at TEXT"),
+            # 国际媒体免费监测层 Phase I（2026-08-13）
+            ("section", "section TEXT"),
+            ("language", "language TEXT"),
+            ("access_level", "access_level TEXT"),
         ):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {ddl}")
@@ -87,8 +98,8 @@ class Database:
             INSERT OR IGNORE INTO articles
                 (source_id, source_name, category, title, url,
                  published_at, fetched_at, position, summary, summary_source,
-                 summary_attempted_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 summary_attempted_at, section, language, access_level)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 article.source_id,
@@ -102,6 +113,9 @@ class Database:
                 article.summary,
                 article.summary_source,
                 article.summary_attempted_at.isoformat() if article.summary_attempted_at else None,
+                article.section,
+                article.language,
+                article.access_level,
             ),
         )
         self.conn.commit()
@@ -114,8 +128,8 @@ class Database:
                 INSERT OR IGNORE INTO articles
                     (source_id, source_name, category, title, url,
                      published_at, fetched_at, position, summary, summary_source,
-                     summary_attempted_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     summary_attempted_at, section, language, access_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     article.source_id,
@@ -129,6 +143,9 @@ class Database:
                     article.summary,
                     article.summary_source,
                     article.summary_attempted_at.isoformat() if article.summary_attempted_at else None,
+                    article.section,
+                    article.language,
+                    article.access_level,
                 ),
             )
             if cursor.rowcount > 0:
@@ -140,7 +157,7 @@ class Database:
         rows = self.conn.execute(
             "SELECT source_id, source_name, category, title, url, "
             "published_at, fetched_at, position, summary, summary_source, "
-            "summary_attempted_at "
+            "summary_attempted_at, section, language, access_level "
             "FROM articles WHERE fetched_at >= ? "
             "ORDER BY category, position, published_at",
             (time.isoformat(),),
@@ -158,6 +175,9 @@ class Database:
                 summary=row[8],
                 summary_source=row[9],
                 summary_attempted_at=datetime.fromisoformat(row[10]) if row[10] else None,
+                section=row[11],
+                language=row[12],
+                access_level=row[13],
             )
             for row in rows
         ]

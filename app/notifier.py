@@ -1,4 +1,5 @@
 import logging
+import sys
 from abc import ABC, abstractmethod
 
 import httpx
@@ -12,13 +13,54 @@ class Notifier(ABC):
     MAX_MESSAGE_LENGTH = 4000
 
     @abstractmethod
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> bool:
         ...
 
     def send_highlight_card(self, highlights: list) -> bool:
         return False
 
-    def send_long(self, text: str) -> None:
+    def send_event_candidates(self, candidates: list) -> bool:
+        """Send one compact message for each eligible international event.
+
+        Event clustering and idempotency are handled before this boundary.  A
+        notifier only renders the already-deduplicated candidates; it never
+        calls the Feishu app module directly.
+        """
+        eligible = [
+            candidate
+            for candidate in (candidates or [])
+            if getattr(candidate, "notifiable", False)
+        ]
+        if not eligible:
+            return True
+        lines = ["【国际重大新闻】", ""]
+        for index, candidate in enumerate(eligible, 1):
+            level = "重大" if getattr(candidate, "importance_level", "") == "critical" else "重点"
+            lines.append(f"{index}. 【{level}】{getattr(candidate, 'cn_title', '')}")
+            lines.append(
+                f"   评分：{getattr(candidate, 'score', 0)}｜事件：{getattr(candidate, 'event_id', '')}"
+            )
+            source_ids = getattr(candidate, "coverage_source_ids", []) or []
+            if source_ids:
+                source_names = {
+                    "reuters_international": "Reuters",
+                    "ft_alphaville": "Financial Times",
+                    "wsj_newsletter": "Wall Street Journal",
+                    "bloomberg_newsletter": "Bloomberg",
+                }
+                names = [source_names.get(str(item), str(item)) for item in source_ids]
+                lines.append(f"   来源：{'、'.join(names)}")
+            reason = str(getattr(candidate, "relevance_reason", "") or "").strip()
+            if reason:
+                lines.append(f"   相关性：{reason}")
+            lines.append(f"   {getattr(candidate, 'canonical_url', '')}")
+            lines.append("")
+        result = self.send_long("\n".join(lines).rstrip())
+        # Legacy custom notifiers may return None; reaching this point still
+        # means the send call completed without raising.
+        return True if result is None else bool(result)
+
+    def send_long(self, text: str) -> bool:
         """Send text, splitting into multiple messages if too long.
 
         Each chunk retains the digest header and a X/Y part indicator.
@@ -26,8 +68,8 @@ class Notifier(ABC):
         or URLs mid-string.
         """
         if len(text) <= self.MAX_MESSAGE_LENGTH:
-            self.send(text)
-            return
+            result = self.send(text)
+            return True if result is None else bool(result)
 
         lines = text.split("\n")
         header = lines[0] if lines else "【台湾新闻监测】"
@@ -57,9 +99,13 @@ class Notifier(ABC):
         if current:
             chunks.append(current)
 
+        delivered = True
         for i, chunk_lines in enumerate(chunks):
             prefix = f"{header}\n第{i + 1}/{len(chunks)}部分\n\n"
-            self.send(prefix + "\n".join(chunk_lines))
+            result = self.send(prefix + "\n".join(chunk_lines))
+            if result is not None:
+                delivered = delivered and bool(result)
+        return delivered
 
     @staticmethod
     def _truncate_line(line: str, max_len: int) -> str:
@@ -84,17 +130,41 @@ class ConsoleNotifier(Notifier):
 
     MAX_MESSAGE_LENGTH = 10_000_000  # effectively unlimited
 
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> bool:
         try:
             print(text)
         except UnicodeEncodeError:
-            _sys.stdout.buffer.write(text.encode("utf-8"))
-            _sys.stdout.buffer.write(b"\n")
-            _sys.stdout.buffer.flush()
+            sys.stdout.buffer.write(text.encode("utf-8"))
+            sys.stdout.buffer.write(b"\n")
+            sys.stdout.buffer.flush()
             logger.warning(
                 "Console UTF-8 fallback (stdout encoding=%s)",
-                _sys.stdout.encoding,
+                sys.stdout.encoding,
             )
+        return True
+
+
+class NullNotifier(Notifier):
+    """No-op notifier for isolated validation and safety tests."""
+
+    def send(self, text: str) -> bool:
+        return True
+
+
+class RecordingNotifier(Notifier):
+    """In-memory notifier for deterministic delivery assertions."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self.event_candidates: list = []
+
+    def send(self, text: str) -> bool:
+        self.messages.append(text)
+        return True
+
+    def send_event_candidates(self, candidates: list) -> bool:
+        self.event_candidates.extend(candidates)
+        return super().send_event_candidates(candidates)
 
 
 class FeishuNotifier(Notifier):
@@ -110,7 +180,7 @@ class FeishuNotifier(Notifier):
         self._app_secret = app_secret
         self._chat_id = chat_id
 
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> bool:
         payload = {
             "msg_type": "text",
             "content": {"text": text},
@@ -123,8 +193,10 @@ class FeishuNotifier(Notifier):
             )
             resp.raise_for_status()
             logger.info("Feishu notification sent (length=%d)", len(text))
+            return True
         except httpx.HTTPError as e:
             logger.error("Feishu send failed: %s", e)
+            return False
 
     def send_highlight_card(self, highlights: list) -> bool:
         """Send an interactive highlight card to Feishu group chat.
@@ -164,7 +236,7 @@ class TelegramNotifier(Notifier):
         self._chat_id = chat_id
         self._api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> bool:
         payload = {
             "chat_id": self._chat_id,
             "text": text,
@@ -178,8 +250,10 @@ class TelegramNotifier(Notifier):
             )
             resp.raise_for_status()
             logger.info("Telegram notification sent (length=%d)", len(text))
+            return True
         except httpx.HTTPError as e:
             logger.error("Telegram send failed: %s", e)
+            return False
 
 
 def create_notifier() -> Notifier:

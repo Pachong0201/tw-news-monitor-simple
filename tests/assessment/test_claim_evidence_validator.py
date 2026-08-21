@@ -154,6 +154,13 @@ class TestNumbersDatesEntities:
         v = _validate(r)
         assert v["person_names_grounded"] is True
 
+    def test_surname_shorthand_is_not_misclassified_as_person(self):
+        r = make_report(build_contract())
+        _claim(r, "C008")["claim_text"] = (
+            "赖陈同框看板属于公开视觉动作，陈阵营简称不作为人物实体。"
+        )
+        assert _validate(r)["person_names_grounded"] is True
+
     def test_whitelist_party_passes(self):
         r = make_report(build_contract())
         _claim(r, "C008")["claim_text"] = "民进党与国民党在台南的结构对比保持稳定。"

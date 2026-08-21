@@ -11,3 +11,19 @@ dist/
 .pytest_cache/
 venv/
 .venv/
+.venv-*/
+deployment/
+validation/
+
+# OAuth material is intentionally kept outside the project.  These patterns
+# are a last-resort guard against accidentally copying it into the workspace.
+credentials*.json
+client_secret*.json
+token*.json
+*credentials*.json
+*token*.json
+*.pickle
+*.p12
+.oauth/
+oauth/
+secrets/

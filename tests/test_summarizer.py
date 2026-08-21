@@ -20,6 +20,7 @@ def make_article(
     summary=None,
     summary_source=None,
     summary_attempted_at=None,
+    access_level=None,
 ):
     now = datetime(2026, 7, 14, 20, 30)
     return Article(
@@ -34,6 +35,7 @@ def make_article(
         summary=summary,
         summary_source=summary_source,
         summary_attempted_at=summary_attempted_at,
+        access_level=access_level,
     )
 
 
@@ -56,8 +58,15 @@ class TestRssTeaser:
     def test_clean_rss_summary_truncates(self):
         text = "字" * 300
         result = summarizer.clean_rss_summary(text, max_length=20)
-        assert len(result) <= 20
-        assert result.endswith("…")
+        assert result == text
+
+    def test_clean_rss_summary_keeps_last_complete_sentence(self):
+        text = "第一句完整。第二句很长" + "字" * 200
+        assert summarizer.clean_rss_summary(text, max_length=20) == "第一句完整。"
+
+    def test_complete_overlength_summary_does_not_need_rewrite(self):
+        article = make_article(summary="完整句子。" + "字" * 200)
+        assert summarizer.summary_needs_rewrite(article) is False
 
     def test_clean_rss_summary_empty(self):
         assert summarizer.clean_rss_summary("") is None
@@ -94,6 +103,9 @@ class TestRssTeaser:
 
         class FakeResp:
             text = xml
+
+            def raise_for_status(self):
+                return None
 
         class FakeClient:
             def get(self, url):
@@ -141,6 +153,34 @@ class TestParseResponse:
         requested = {"https://example.com/1"}
         data = {"https://example.com/1": "   ", "https://example.com/2": "合法摘要內容"}
         assert summarizer.parse_summaries_response(data, requested) == {}
+
+    def test_does_not_cut_model_summary_mid_sentence(self):
+        requested = {"https://example.com/1"}
+        text = "完整第一句。" + "字" * 200
+        result = summarizer.parse_summaries_response(
+            {"https://example.com/1": text}, requested, max_length=20
+        )
+        assert result["https://example.com/1"] == "完整第一句。"
+
+
+class TestInternationalMetadataTranslation:
+    def test_translate_metadata_uses_only_supplied_metadata(self, monkeypatch):
+        class FakeClient:
+            def analyze(self, system, user):
+                assert "https://" not in user
+                assert "English title" in user
+                assert "English teaser" in user
+                return {
+                    "status": "success",
+                    "title": "中文標題",
+                    "summary": "中文摘要。",
+                }
+
+        monkeypatch.setenv("INTERNATIONAL_TRANSLATION_ENABLED", "true")
+        monkeypatch.setattr(summarizer, "_load_deepseek_client", lambda: FakeClient())
+        assert summarizer.translate_metadata(
+            "English title", "English teaser", source_name="Reuters"
+        ) == ("中文標題", "中文摘要。")
 
 
 class TestPrompt:
@@ -202,6 +242,38 @@ class TestPrompt:
 
 
 class TestEnrich:
+    def test_international_access_level_never_fetches_article_page(self, monkeypatch):
+        monkeypatch.setenv("SUMMARIZER_MODE", "hybrid")
+        monkeypatch.setattr(summarizer, "deepseek_available", lambda: False)
+        fetched = {"content": [], "meta": []}
+
+        def fake_contents(articles, **kwargs):
+            fetched["content"] = [a.url for a in articles]
+            return {}, []
+
+        def fake_meta(articles, **kwargs):
+            fetched["meta"] = [a.url for a in articles]
+            return {}
+
+        monkeypatch.setattr(summarizer, "fetch_article_contents", fake_contents)
+        monkeypatch.setattr(summarizer, "fetch_meta_descriptions", fake_meta)
+        monkeypatch.setattr(
+            summarizer, "summarize_with_deepseek", lambda articles, **kwargs: {}
+        )
+        local = make_article(url="https://example.com/local")
+        metadata = make_article(
+            url="https://www.reuters.com/world/taiwan-a1",
+            access_level="metadata_only",
+        )
+        newsletter = make_article(
+            url="https://www.wsj.com/world/taiwan-a2",
+            access_level="newsletter",
+        )
+
+        summarizer.enrich_articles_with_summaries([local, metadata, newsletter])
+
+        assert fetched["content"] == [local.url]
+        assert fetched["meta"] == [local.url]
     def test_enrich_uses_deepseek(self, monkeypatch):
         monkeypatch.setenv("SUMMARIZER_MODE", "llm")
         monkeypatch.setattr(

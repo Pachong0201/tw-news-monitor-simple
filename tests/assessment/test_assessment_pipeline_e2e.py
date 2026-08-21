@@ -39,7 +39,7 @@ class TestAssessmentPipelineE2E:
         run_dir = runs[-1]
         manifest = json.loads((run_dir / "pipeline_manifest.json").read_text(encoding="utf-8"))
         assert manifest["status"] == "success"
-        assert manifest["generation_mode"] == "draft_with_data_gap"
+        assert manifest["generation_mode"] == "final"
         assert manifest["report_status"] in ("generated", "repaired")
         assert manifest["artifact_status"] == "ready"
         assert manifest["delivery_status"] == "delivered"
@@ -78,7 +78,13 @@ class TestAssessmentPipelineE2E:
         # dry_run 不安装计划任务（安装仅由 PowerShell -DryRun 调用，测试中无副作用）
         assert not list(run_dir.glob("*.ps1"))
 
-    def test_production_blocked_end_to_end(self, tmp_path):
+    def test_production_blocked_end_to_end(self, tmp_path, monkeypatch):
+        # 显式声明"本机无 LLM/飞书凭据"场景：结果不受真实 .env 或系统环境变量影响，
+        # 同时保证失败告警因缺少飞书凭据而安全降级（零网络调用，不发真实通知）。
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.delenv("FEISHU_APP_ID", raising=False)
+        monkeypatch.delenv("FEISHU_APP_SECRET", raising=False)
+        monkeypatch.delenv("FEISHU_CHAT_ID", raising=False)
         before = _formal_hashes()
         code = run(
             CONFIG,
@@ -104,7 +110,9 @@ class TestAssessmentPipelineE2E:
                 str(json.dumps(failure.get("report_period") or {})),
             ]
         )
-        assert "DeepSeek" in joined or "DEEPSEEK" in joined
+        # 门禁语义：生产前置检查被阻止，且缺 LLM 凭据被明确上报
+        assert "生产前置检查未通过" in joined
+        assert "DEEPSEEK_API_KEY" in joined
         assert not list(run_dir.glob("*.docx"))
         assert not (tmp_path / "pipeline_runs" / "latest.json").exists()
         assert _formal_hashes() == before

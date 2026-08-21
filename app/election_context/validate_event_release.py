@@ -384,7 +384,7 @@ def check_event_release(
             'snapshots': db.execute("SELECT COUNT(*) FROM election_state_snapshots").fetchone()[0],
         }
         db.close()
-        baseline = {'events': 41, 'sources': 112, 'actors': 6, 'polls': 15, 'questions': 39, 'results': 116, 'snapshots': 4}
+        baseline = {'events': 42, 'sources': 113, 'actors': 7, 'polls': 15, 'questions': 39, 'results': 116, 'snapshots': 5}
         for k, v in baseline.items():
             if formal_counts.get(k) != v:
                 formal_unchanged = False

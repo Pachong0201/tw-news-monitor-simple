@@ -1,18 +1,20 @@
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = PROJECT_ROOT / "scripts"
+POWERSHELL = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
 
 
 def _run_build(bundle_dir: Path):
     result = subprocess.run(
         [
-            "powershell",
+            POWERSHELL,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -36,7 +38,7 @@ def _run_build(bundle_dir: Path):
 def _run_validate(bundle_dir: Path):
     result = subprocess.run(
         [
-            "powershell",
+            POWERSHELL,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -69,9 +71,24 @@ class TestDeploymentBundle:
             "config/election_assessment.yaml",
             "config/election_assessment_deployment.example.yaml",
             "config/feishu_delivery.example.yaml",
+            "config/election_candidate_pipeline.yaml",
+            "config/coverage_acceptance_rules.yaml",
+            "config/sources.yaml",
             "scripts/install_tainan_assessment_tasks.ps1",
             "scripts/run_tainan_assessment.bat",
             "app/assessment/run_assessment_pipeline.py",
+            "app/election_context/formal_state_validator.py",
+            "app/election_context/coverage_builder.py",
+            "app/election_context/snapshot_pipeline.py",
+            "app/election_candidates/publication_pipeline.py",
+            "app/election_candidates/publication_recovery.py",
+            "data/election_seed/tainan_2026/actors.yaml",
+            "data/election_seed/tainan_2026/poll_questions.jsonl",
+            "data/election_seed/tainan_2026/poll_results.jsonl",
+            "data/election_seed/tainan_2026/seed_manifest.json",
+            "data/election_seed/tainan_2026/schema_versions.json",
+            "run_monitor.bat",
+            "install_scheduled_task.ps1",
         ):
             assert (tmp_path / rel).exists(), rel
 
@@ -87,6 +104,13 @@ class TestDeploymentBundle:
         _run_build(tmp_path)
         manifest = json.loads((tmp_path / "MANIFEST.json").read_text(encoding="utf-8"))
         assert manifest["file_count"] == len(manifest["files"])
+        actual = {
+            path.relative_to(tmp_path).as_posix()
+            for path in tmp_path.rglob("*")
+            if path.is_file()
+            and path.name not in {"MANIFEST.json", "SHA256SUMS", "validation.json"}
+        }
+        assert set(manifest["files"]) == actual
         sample = list(manifest["files"].items())[:10]
         for rel, expected in sample:
             data = (tmp_path / rel).read_bytes()

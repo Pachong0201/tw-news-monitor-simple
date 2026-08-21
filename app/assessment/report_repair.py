@@ -25,6 +25,16 @@ REPAIRABLE_MARKERS = (
     "违反 do_not_infer",
     "缺少披露",
     "事实",
+    # v2.0 研判单元契约结构错误（可修复：按契约重写对应单元）
+    "report_structure",
+    "结论摘要",
+    "核心研判",
+    "reasoning",
+    "falsifiers_or_limits",
+    "watch_indicators",
+    "重复堆叠",
+    "零信息",
+    "可证伪",
 )
 
 UNREPAIRABLE_MARKERS = (

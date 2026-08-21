@@ -29,6 +29,10 @@ def build_preflight(
     reasoning_content_persisted: bool,
     formal_data_unchanged: bool,
     evidence_package_unchanged: bool,
+    formal_live_validation_pass_count: int = 0,
+    required_formal_live_validation_passes: int = 2,
+    formal_live_input_business_hash: str = "",
+    formal_live_response_ids: list[str] | None = None,
     errors: list[str] | None = None,
     warnings: list[str] | None = None,
 ) -> dict:
@@ -52,10 +56,33 @@ def build_preflight(
         errors.append("credentials_present: DEEPSEEK_API_KEY 未配置")
     if live_deepseek_test != "passed":
         errors.append(f"live_deepseek_test={live_deepseek_test}（生产门禁要求 passed）")
+    if formal_live_validation_pass_count < required_formal_live_validation_passes:
+        errors.append(
+            "formal_live_stability: "
+            f"同一冻结输入通过 {formal_live_validation_pass_count}/"
+            f"{required_formal_live_validation_passes} 次"
+        )
     if not cache_reuse_valid:
         errors.append("cache_reuse_valid: 缓存复用未验证")
 
-    preflight_ready = core_ok and not errors
+    stability_ready = (
+        formal_live_validation_pass_count >= required_formal_live_validation_passes
+    )
+    production_llm_ready = (
+        core_ok
+        and credentials_present
+        and live_deepseek_test == "passed"
+        and stability_ready
+        and not errors
+    )
+    preflight_ready = production_llm_ready
+    blocker = None
+    if not production_llm_ready:
+        blocker = (
+            "provider_contract_incompatibility"
+            if live_deepseek_test == "failed"
+            else "formal_live_stability_not_satisfied"
+        )
     return {
         "preflight_ready": preflight_ready,
         "errors": errors,
@@ -81,7 +108,13 @@ def build_preflight(
         "reasoning_content_persisted": reasoning_content_persisted,
         "formal_data_unchanged": formal_data_unchanged,
         "evidence_package_unchanged": evidence_package_unchanged,
-        "production_llm_ready": core_ok and live_deepseek_test == "passed" and not errors,
+        "formal_live_validation_pass_count": formal_live_validation_pass_count,
+        "required_formal_live_validation_passes": required_formal_live_validation_passes,
+        "formal_live_stability_ready": stability_ready,
+        "formal_live_input_business_hash": formal_live_input_business_hash,
+        "formal_live_response_ids": list(formal_live_response_ids or []),
+        "production_llm_ready": production_llm_ready,
+        "blocker": blocker,
     }
 
 
@@ -140,4 +173,3 @@ def render_live_review(report: dict, contract: dict, validation: dict) -> str:
     add(f"- do_not_infer_compliant: {validation.get('do_not_infer_compliant')}")
     add(f"- errors: {validation.get('errors')}")
     return "\n".join(lines) + "\n"
-

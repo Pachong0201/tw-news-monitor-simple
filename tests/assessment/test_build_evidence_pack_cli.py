@@ -85,11 +85,11 @@ class TestCliIntegration:
         assert pack["schema_version"] == "1.1"
         assert pack["report_period"]["period_start"] == "2026-07-16"
         assert pack["report_period"]["period_end"] == "2026-07-31"
-        assert pack["data_status"]["active_snapshot_id"] == "tn_state_20260801_v1"
-        assert pack["data_status"]["facts_cutoff"] == "2026-07-27"
+        assert pack["data_status"]["active_snapshot_id"] == "tn_state_20260811_v2"
+        assert pack["data_status"]["facts_cutoff"] == "2026-08-11"
         assert pack["data_status"]["poll_cutoff"] == "2026-03-12"
-        assert pack["data_status"]["report_period_fully_covered_by_facts"] is False
-        assert "2026-07-28" in pack["data_status"]["uncovered_date_range"]
+        assert pack["data_status"]["report_period_fully_covered_by_facts"] is True
+        assert pack["data_status"]["uncovered_date_range"] == []
         rp = pack["report_period"]
         assert rp["scheduled_run_date"] == "2026-08-09"
         assert rp["calendar_lag_days"] == 9
@@ -100,8 +100,8 @@ class TestCliIntegration:
         assert rp["period_definition"] == "natural_half_month"
         assert rp["schedule_definition"] == "delayed_generation"
         elig = pack["generation_eligibility"]
-        assert elig["final_report_allowed"] is False
-        assert elig["allowed_generation_mode"] == "draft_with_data_gap"
+        assert elig["final_report_allowed"] is True
+        assert elig["allowed_generation_mode"] == "final"
         assert pack["evidence_statistics"]["active_research_task_count"] == 3
         assert pack["evidence_statistics"]["risk_change_count"] == len(pack["risk_changes"])
         contract = json.loads((period_dir / "llm_input_contract.json").read_text(encoding="utf-8"))

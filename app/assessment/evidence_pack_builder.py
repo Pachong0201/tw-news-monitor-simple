@@ -196,6 +196,69 @@ def _texts(items: Any) -> list[str]:
     return out
 
 
+def _evidence_assertions(event_id: str, event_type: str, analysis: dict) -> list[dict]:
+    """Faithfully project existing formal assertion records with their metadata."""
+
+    out: list[dict] = []
+
+    def add(items: Any, assertion_type: str, prefix: str) -> None:
+        if not items:
+            return
+        if isinstance(items, (str, dict)):
+            items = [items]
+        for index, item in enumerate(items, 1):
+            record = item if isinstance(item, dict) else {"text": str(item)}
+            text = next(
+                (
+                    str(record[key])
+                    for key in ("fact", "claim", "interpretation", "inference", "text")
+                    if record.get(key)
+                ),
+                "",
+            )
+            if not text:
+                continue
+            resolved_type = assertion_type
+            if prefix == "candidate" and event_type in {
+                "campaign_attack",
+                "scandal_allegation",
+            }:
+                resolved_type = "allegation"
+            assertion_id = (
+                record.get("fact_id")
+                or record.get("claim_id")
+                or record.get("interpretation_id")
+                or record.get("inference_id")
+                or f"{event_id}:{prefix}:{index}"
+            )
+            out.append(
+                {
+                    "assertion_id": str(assertion_id),
+                    "assertion_type": resolved_type,
+                    "text": text,
+                    "speaker": record.get("speaker"),
+                    "assertion_status": record.get("claim_status")
+                    or record.get("status"),
+                    "source_ids": list(record.get("source_ids") or []),
+                    "confidence": record.get("confidence"),
+                }
+            )
+
+    add(analysis.get("verified_facts"), "observed_fact", "fact")
+    add(analysis.get("candidate_claims"), "actor_statement", "candidate")
+    add(analysis.get("party_claims"), "actor_statement", "party")
+    add(analysis.get("research_claims"), "actor_statement", "research")
+    add(analysis.get("media_interpretations"), "media_interpretation", "media")
+    significance = analysis.get("analytical_significance")
+    if significance:
+        add(
+            [{"text": significance}],
+            "analytical_significance",
+            "analysis",
+        )
+    return out
+
+
 def _recursive_key_values(obj: Any, key: str, out: list[str]) -> None:
     if isinstance(obj, dict):
         if key in obj:
@@ -242,6 +305,9 @@ def normalize_event(ev: dict) -> dict:
         mentions = parse_json_field(mentions) or []
 
     source_ids = [s.get("source_id") for s in (ev.get("sources") or []) if s.get("source_id")]
+    evidence_assertions = _evidence_assertions(
+        str(ev["event_id"]), str(ev.get("event_type") or ""), analysis
+    )
 
     return {
         "event_id": ev["event_id"],
@@ -261,6 +327,7 @@ def normalize_event(ev: dict) -> dict:
         ),
         "media_interpretations": _texts(analysis.get("media_interpretations")),
         "analytical_significance": analysis.get("analytical_significance") or "",
+        "evidence_assertions": evidence_assertions,
         "limitations": limitations,
         "mentions": mentions,
         "source_ids": source_ids,
@@ -915,13 +982,15 @@ def build_pack(
 
     state_diff = diff_snapshots(active_state, previous_state)
 
+    # facts_cutoff/poll_cutoff 以权威 coverage preflight 为准；
+    # snapshot 内嵌值可能形成于更早时点，仅在 preflight 缺失时作为兜底。
     facts_cutoff = (
-        (active_state.get("coverage") or {}).get("facts_cutoff")
-        or formal.coverage_preflight.get("facts_cutoff")
+        formal.coverage_preflight.get("facts_cutoff")
+        or (active_state.get("coverage") or {}).get("facts_cutoff")
     )
     poll_cutoff = (
-        (active_state.get("coverage") or {}).get("poll_cutoff")
-        or formal.coverage_preflight.get("poll_cutoff")
+        formal.coverage_preflight.get("poll_cutoff")
+        or (active_state.get("coverage") or {}).get("poll_cutoff")
     )
     fully_covered = parse_date(facts_cutoff) is not None and end <= parse_date(facts_cutoff)
     uncovered = uncovered_range(facts_cutoff, end)

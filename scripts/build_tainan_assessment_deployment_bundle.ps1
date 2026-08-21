@@ -1,5 +1,6 @@
 ﻿param(
     [string]$OutputDir = "dist\tainan-assessment-deployment",
+    [string]$ReleaseName = "",
     [switch]$Force
 )
 
@@ -9,6 +10,9 @@ if ([System.IO.Path]::IsPathRooted($OutputDir)) {
     $BundleRoot = $OutputDir
 } else {
     $BundleRoot = Join-Path $ProjectDir $OutputDir
+}
+if (-not $ReleaseName) {
+    $ReleaseName = Split-Path -Leaf ([System.IO.Path]::GetFullPath($BundleRoot))
 }
 
 if (Test-Path $BundleRoot) {
@@ -34,15 +38,39 @@ function Copy-Tree($Source, $Dest) {
 
 Copy-Tree (Join-Path $ProjectDir "app") (Join-Path $BundleRoot "app")
 Copy-Tree (Join-Path $ProjectDir "scripts") (Join-Path $BundleRoot "scripts")
+# Phase F1 candidate-monitor operations belong to a separate deployment and
+# intentionally reference the production/workspace absolute paths; keep them
+# out of the assessment deployment bundle.
+foreach ($candidateOpsScript in @(
+    "install_candidate_monitor_task.ps1",
+    "status_candidate_monitor_task.ps1",
+    "run_candidate_monitor_now.ps1",
+    "uninstall_candidate_monitor_task.ps1",
+    "rollback_candidate_deployment.ps1",
+    "phase_f1_baseline.py",
+    "sync_production_seeds_from_db.py",
+    "deploy_candidate_production.ps1"
+)) {
+    $candidateOpsPath = Join-Path $BundleRoot ("scripts\" + $candidateOpsScript)
+    if (Test-Path -LiteralPath $candidateOpsPath) {
+        Remove-Item -LiteralPath $candidateOpsPath -Force
+    }
+}
+Copy-Tree (Join-Path $ProjectDir "config") (Join-Path $BundleRoot "config")
+Copy-Tree (Join-Path $ProjectDir "prompts") (Join-Path $BundleRoot "prompts")
 
 # 只复制正式种子必需文件 + 唯一 ready 覆盖目录（不包含历史备份/preview/tmp）
 $SeedSrc = Join-Path $ProjectDir "data\election_seed\tainan_2026"
 $SeedDst = Join-Path $BundleRoot "data\election_seed\tainan_2026"
 New-Item -ItemType Directory -Force -Path $SeedDst | Out-Null
 foreach ($name in @(
+    "actors.yaml",
+    "taxonomy.yaml",
     "events.jsonl",
     "sources.jsonl",
     "polls.jsonl",
+    "poll_questions.jsonl",
+    "poll_results.jsonl",
     "initial_snapshot.json",
     "snapshot_history.jsonl",
     "election.json",
@@ -52,7 +80,15 @@ foreach ($name in @(
     "poll_import_plan.json",
     "poll_post_release_reconciliation.json",
     "poll_release_acceptance_rules.yaml",
-    "poll_schema.json"
+    "poll_schema.json",
+    "schema_versions.json",
+    "seed_manifest.json",
+    "core_event_dossiers.jsonl",
+    "core_event_evidence_gaps.json",
+    "snapshot_evidence_manifest_20260801.json",
+    "snapshot_generation_report_20260801.json",
+    "snapshot_limitations_20260801.json",
+    "snapshot_release_acceptance_rules.yaml"
 )) {
     $src = Join-Path $SeedSrc $name
     if (Test-Path $src) {
@@ -70,14 +106,18 @@ if (-not $coverage) { throw "未找到 ready 覆盖目录" }
 Copy-Tree $coverage.FullName (Join-Path $SeedDst $coverage.Name)
 
 foreach ($rel in @(
-    "config\election_assessment.yaml",
-    "config\llm_pricing.yaml",
-    "config\election_assessment_deployment.example.yaml",
-    "config\feishu_delivery.example.yaml",
     "requirements.txt",
+    "README.md",
     "README_DEPLOYMENT.md",
     "VERSION",
-    "data\election_context.db"
+    "data\election_context.db",
+    "bootstrap.bat",
+    "export_word.bat",
+    "run_monitor.bat",
+    "install_scheduled_task.ps1",
+    "uninstall_scheduled_task.ps1",
+    "scheduled_task_status.ps1",
+    "run_scheduled_task_now.ps1"
 )) {
     $src = Join-Path $ProjectDir $rel
     if (-not (Test-Path $src)) { throw "缺失文件：$rel" }
@@ -97,7 +137,7 @@ if ($files) { $files | Remove-Item -Force }
 # MANIFEST + SHA256SUMS
 $files = Get-ChildItem -Path $BundleRoot -Recurse -File
 $manifest = [ordered]@{
-    bundle_name = "tainan-assessment-deployment"
+    bundle_name = $ReleaseName
     version = (Get-Content (Join-Path $BundleRoot "VERSION") -Encoding UTF8 | Select-Object -First 1).Trim()
     created_at = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
     file_count = $files.Count

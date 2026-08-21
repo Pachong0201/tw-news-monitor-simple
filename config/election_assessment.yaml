@@ -86,7 +86,32 @@ llm:
     enabled: true
     reuse_validated_output: true
 
+  # research-driven 研判路径（生产）：provider/model/temperature/max_tokens 配置化
+  research_driven:
+    provider: deepseek
+    model_env: DEEPSEEK_MODEL
+    base_url: https://api.deepseek.com
+    default_model: deepseek-v4-pro
+    allowed_models:
+      - deepseek-v4-flash
+      - deepseek-v4-pro
+    temperature: 0.7
+    request_timeout_seconds: 300
+    max_attempts: 2
+    max_output_tokens: 16000
+    json_output: true
+
 report_generation:
+  assessment_generation_mode: research_driven
+  legacy_assessment_generation_modes:
+    - single_stage_claim_validated
+    - two_stage
+  research_driven_pipeline_version: "1.0.0"
+  assessment_generation_pipeline_version: 2.0.0-rc1
+  claim_plan_schema_version: "1.0"
+  claim_planner_contract_version: "1.0"
+  report_writer_stage2_contract_version: "1.0"
+  report_output_schema_version: "1.1"
   language: zh-CN
   report_type: internal_political_assessment
   target_length_chinese_chars:
@@ -137,7 +162,7 @@ delivery:
     timeout_seconds: 30
     max_attempts: 2
     send_summary: true
-    send_artifact: false
+    send_artifact: true
 
   mock:
     fixture: success

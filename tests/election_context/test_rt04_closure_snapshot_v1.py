@@ -249,7 +249,7 @@ def test_unique_active_after_publish():
     active = conn.execute("SELECT snapshot_id FROM election_state_snapshots WHERE snapshot_status='active'").fetchall()
     conn.close()
     assert len(active) == 1
-    assert active[0][0] == 'tn_state_20260801_v1'
+    assert active[0][0] == 'tn_state_20260811_v2'
 
 
 # ─── 21. old active superseded ───
@@ -265,9 +265,9 @@ def test_old_snapshot_superseded():
 # ─── 22. second publish idempotent ───
 def test_snapshot_publish_idempotent():
     history = load_jsonl(SEED / 'snapshot_history.jsonl')
-    assert sum(1 for h in history if h.get('snapshot_id') == 'tn_state_20260801_v1') == 0
+    assert sum(1 for h in history if h.get('snapshot_id') == 'tn_state_20260801_v1') == 1
     active_raw = read_json(SEED / 'initial_snapshot.json')
-    assert active_raw['snapshot_id'] == 'tn_state_20260801_v1'
+    assert active_raw['snapshot_id'] == 'tn_state_20260811_v2'
     # v2 recorded exactly once in history
     assert sum(1 for h in history if h.get('snapshot_id') == 'tn_state_20260727_v2') == 1
 

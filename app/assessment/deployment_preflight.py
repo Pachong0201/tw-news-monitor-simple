@@ -118,7 +118,11 @@ def _check_production_llm_preflight(root: Path, errors: list[str], warnings: lis
         return {}
     preflight = _json(path)
     if preflight.get("production_llm_ready") is not True:
-        errors.append("production_preflight: production_llm_ready 未通过（live DeepSeek 预检未完成）")
+        errors.append(
+            "production_preflight: production_llm_ready 未通过"
+            f"（live={preflight.get('live_deepseek_test') or 'not_run'}，"
+            f"blocker={preflight.get('blocker') or 'unknown'}）"
+        )
     return preflight
 
 
@@ -145,6 +149,7 @@ def _check_delivery_preflight(config: dict, errors: list[str], warnings: list[st
             "missing_environment_variables": [],
         }
     matrix = probe.capability_matrix()
+    technical_ready = matrix["delivery_preflight_ready"]
     if not enabled:
         warnings.append("delivery: 已显式关闭（delivery.enabled=false）")
     else:
@@ -157,9 +162,10 @@ def _check_delivery_preflight(config: dict, errors: list[str], warnings: list[st
         errors.append(
             "delivery: 飞书旧凭据尚未确认轮换（feishu_credentials_rotated_after_incident=false）"
         )
-    matrix["delivery_preflight_ready"] = (
-        matrix["delivery_preflight_ready"] and rotated
-    )
+    matrix["feishu_technical_ready"] = technical_ready
+    matrix["feishu_credentials_rotated_after_incident"] = rotated
+    matrix["production_delivery_ready"] = technical_ready and rotated
+    matrix["delivery_preflight_ready"] = matrix["production_delivery_ready"]
     return matrix
 
 
@@ -243,10 +249,12 @@ def build_deployment_preflight(
     period_start: date | None = None,
     period_end: date | None = None,
 ) -> dict:
-    errors: list[str] = []
+    technical_errors: list[str] = []
+    period_errors: list[str] = []
+    delivery_errors: list[str] = []
     warnings: list[str] = []
     if level not in ("development", "dry_run", "production"):
-        errors.append(f"preflight_level: 未知级别 {level}")
+        technical_errors.append(f"preflight_level: 未知级别 {level}")
 
     schedule = config.get("schedule", {}) or {}
     llm = config.get("llm", {}) or {}
@@ -259,45 +267,129 @@ def build_deployment_preflight(
     if level in ("development", "dry_run", "production"):
         for rel in REQUIRED_CODE_FILES:
             if not (root / rel).exists():
-                errors.append(f"code_file: 缺失 {rel}")
+                technical_errors.append(f"code_file: 缺失 {rel}")
                 dev_ready = False
-        _check_word_deps(errors)
-        _check_mock_provider(errors)
-        _check_mock_delivery(errors)
-        _check_writable(root, errors, warnings)
+        _check_word_deps(technical_errors)
+        _check_mock_provider(technical_errors)
+        _check_mock_delivery(technical_errors)
+        _check_writable(root, technical_errors, warnings)
+        dev_ready = dev_ready and not technical_errors
 
     dry_run_ready = dev_ready
     if level in ("dry_run", "production"):
-        dry_run_ready = _check_formal_data(config, root, errors, warnings)
+        dry_run_ready = dev_ready and _check_formal_data(
+            config, root, technical_errors, warnings
+        )
 
-    production_ready = dry_run_ready
+    production_system_ready = False
+    current_reporting_period_final_ready = False
+    production_delivery_ready = False
+    scheduler_technical_install_ready = False
+    scheduler_activation_authorized = False
+    scheduler_install_ready = False
+    scheduler_installed = False
+    period_coverage = {
+        "coverage_status": None,
+        "facts_cutoff": None,
+        "period_end": None,
+    }
     live_deepseek_test = "not_run"
+    llm_preflight: dict = {}
+    delivery_matrix: dict = {}
     if level == "production":
-        production_ready = bool(os.getenv("DEEPSEEK_API_KEY"))
         if not credentials_present:
-            errors.append("credentials: DEEPSEEK_API_KEY 未配置")
-        _check_model_valid(config, errors, warnings)
-        preflight = _check_production_llm_preflight(root, errors, warnings)
-        live_deepseek_test = str(preflight.get("live_deepseek_test") or "not_run")
-        delivery_matrix = _check_delivery_preflight(config, errors, warnings)
+            technical_errors.append("credentials: DEEPSEEK_API_KEY 未配置")
+        _check_model_valid(config, technical_errors, warnings)
+        llm_preflight = _check_production_llm_preflight(
+            root, technical_errors, warnings
+        )
+        live_deepseek_test = str(
+            llm_preflight.get("live_deepseek_test") or "not_run"
+        )
+        delivery_matrix = _check_delivery_preflight(config, delivery_errors, warnings)
         if not sys.executable:
-            errors.append("python_env: 无法定位 Python 解释器")
+            technical_errors.append("python_env: 无法定位 Python 解释器")
         _check_period_coverage(
             config,
             root,
-            errors,
+            period_errors,
             warnings,
             as_of=as_of,
             period_start=period_start,
             period_end=period_end,
         )
-        production_ready = production_ready and not errors
+        try:
+            tz_name = config.get("timezone", "Asia/Taipei")
+            run_days = tuple(
+                int(x) for x in (config.get("schedule", {}).get("run_days") or [9, 22])
+            )
+            raw_rules = (config.get("schedule", {}) or {}).get("periods") or {}
+            period_rules = {
+                int(key.split("_")[-1]): value
+                for key, value in raw_rules.items()
+                if key.startswith("day_") and value
+            }
+            resolved_period = resolve_reporting_period(
+                timezone_name=tz_name,
+                run_days=run_days,
+                period_rules=period_rules or None,
+                as_of=as_of,
+                explicit_start=period_start,
+                explicit_end=period_end,
+            )
+            label = (
+                f"{resolved_period.period_start.isoformat()}_"
+                f"{resolved_period.period_end.isoformat()}"
+            )
+            pack_path = (
+                root
+                / (config.get("paths") or {}).get(
+                    "output_root", "data/reports/tainan_2026/evidence_packages"
+                )
+                / label
+                / "report_evidence_pack.json"
+            )
+            if pack_path.exists():
+                period_pack = _json(pack_path)
+                pack_status = period_pack.get("data_status") or {}
+                snapshot_coverage = (
+                    (((period_pack.get("current_snapshot") or {}).get("state") or {}).get("coverage"))
+                    or {}
+                )
+                period_coverage = {
+                    "coverage_status": snapshot_coverage.get("coverage_status"),
+                    "facts_cutoff": pack_status.get("facts_cutoff"),
+                    "period_end": resolved_period.period_end.isoformat(),
+                }
+        except PeriodError:
+            pass
+        production_system_ready = dry_run_ready and not technical_errors
+        current_reporting_period_final_ready = not period_errors
+        production_delivery_ready = (
+            bool(delivery_matrix.get("production_delivery_ready"))
+            and not delivery_errors
+        )
+        scheduler_technical_install_ready = bool(
+            dry_run_ready
+            and sys.executable
+            and (root / "scripts" / "install_tainan_assessment_tasks.ps1").exists()
+        )
+        scheduler_activation_authorized = (
+            production_system_ready and production_delivery_ready
+        )
+        scheduler_install_ready = scheduler_activation_authorized
 
+    errors = technical_errors + period_errors + delivery_errors
+    production_ready = (
+        production_system_ready
+        and current_reporting_period_final_ready
+        and production_delivery_ready
+    )
     ready = not errors
     preflight_ready = {
         "development": dev_ready and not errors,
         "dry_run": dry_run_ready and not errors,
-        "production": production_ready and not errors,
+        "production": production_ready,
     }.get(level, False)
     return {
         "preflight_level": level,
@@ -307,14 +399,39 @@ def build_deployment_preflight(
         "development_ready": dev_ready and not errors if level == "development" else dev_ready,
         "dry_run_ready": dry_run_ready and not errors if level == "dry_run" else dry_run_ready,
         "production_ready": (
-            production_ready and not errors if level == "production" else False
+            production_ready if level == "production" else False
         ),
+        "production_system_ready": production_system_ready,
+        "current_reporting_period_final_ready": current_reporting_period_final_ready,
+        "production_delivery_ready": production_delivery_ready,
+        "scheduler_technical_install_ready": scheduler_technical_install_ready,
+        "scheduler_activation_authorized": scheduler_activation_authorized,
+        "scheduler_install_ready": scheduler_install_ready,
+        "scheduler_installed": scheduler_installed,
+        "technical_errors": technical_errors,
+        "current_period_blockers": period_errors,
+        "delivery_blockers": delivery_errors,
+        "period_coverage": period_coverage,
         "schedule_days": list(schedule.get("run_days") or [9, 22]),
         "default_provider": default_provider,
         "default_model": default_model,
         "credentials_present": credentials_present,
         "live_deepseek_test": live_deepseek_test,
-        "production_llm_ready": False,
+        "production_llm_ready": (
+            llm_preflight.get("production_llm_ready") is True
+            if level == "production"
+            else False
+        ),
+        "feishu_technical_ready": (
+            delivery_matrix.get("feishu_technical_ready", False)
+            if level == "production"
+            else None
+        ),
+        "feishu_credentials_rotated_after_incident": (
+            delivery_matrix.get("feishu_credentials_rotated_after_incident", False)
+            if level == "production"
+            else None
+        ),
         "file_delivery_supported": (
             delivery_matrix.get("file_delivery_supported", False)
             if level == "production"
@@ -330,7 +447,7 @@ def build_deployment_preflight(
             e.startswith("formal_data") or e.startswith("coverage") for e in errors
         ),
         "word_dependencies_ready": _check_word_deps([]),
-        "production_llm_ready_unchanged": True,
+        "production_llm_ready_unchanged": False,
     }
 
 

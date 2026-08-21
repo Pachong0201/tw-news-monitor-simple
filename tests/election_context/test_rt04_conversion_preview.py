@@ -154,7 +154,7 @@ def test_formal_unchanged():
          conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0],
          conn.execute('SELECT COUNT(*) FROM event_sources').fetchone()[0])
     conn.close()
-    assert c == (41, 112, 101)
+    assert c == (42, 113, 102)
 
 # ─── 20. Preview types valid ───
 def test_preview_types_valid():

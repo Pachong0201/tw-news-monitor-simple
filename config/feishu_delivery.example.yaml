@@ -19,7 +19,7 @@ delivery:
     timeout_seconds: 30
     max_attempts: 2
     send_summary: true
-    send_artifact: false
+    send_artifact: true
 
   # 能力说明：
   # - webhook_summary：只需要 FEISHU_WEBHOOK，只能发送文本摘要，file_delivery_supported=false。

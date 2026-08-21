@@ -28,6 +28,25 @@ class TestMockProvider:
         r = _generate("valid_final")
         assert r.structured_output["generation_mode"] == "final"
 
+    def test_valid_v2_contract(self):
+        r = _generate("valid_v2")
+        out = r.structured_output
+        assert out["schema_version"] == "2.0"
+        assert out["conclusion_summary"]
+        assert 1 <= len(out["core_assessments"]) <= 3
+        for unit in out["core_assessments"]:
+            for key in (
+                "judgment",
+                "evidence_items",
+                "evidence_refs",
+                "reasoning",
+                "falsifiers_or_limits",
+                "confidence",
+                "watch_indicators",
+            ):
+                assert key in unit
+            assert 2 <= len(unit["evidence_items"]) <= 4
+
     def test_timeout(self):
         with pytest.raises(LLMTimeoutError):
             _generate("provider_timeout")

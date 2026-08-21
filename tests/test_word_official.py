@@ -24,7 +24,7 @@ class TestWordOfficialAdvanced:
         texts = [p.text for p in doc.paragraphs]
         combined = " ".join(texts)
         assert "一、官方信源" not in combined
-        assert "媒体新闻" in combined
+        assert "新闻媒体" in combined
 
     def test_official_only_no_media(self):
         arts = [make_off("O1","https://p.gov/1"), make_off("O2","https://p.gov/2")]
@@ -34,14 +34,14 @@ class TestWordOfficialAdvanced:
         assert "官方信源" in combined
         assert "台湾总统府" in combined
         assert "类型：新闻稿" in combined
-        assert "一、媒体新闻" not in combined
+        assert "一、新闻媒体" not in combined
 
     def test_mixed_official_first(self):
         arts = [make_off("O1","https://p.gov/1"), make_media("M1","https://u.com/1")]
         d = build_word_digest(arts, Path(tempfile.mkdtemp()), now)
         texts = [p.text for p in Document(str(d)).paragraphs]
         o_idx = next(i for i,t in enumerate(texts) if "一、官方信源" in t)
-        m_idx = next(i for i,t in enumerate(texts) if "二、媒体新闻" in t)
+        m_idx = next(i for i,t in enumerate(texts) if "二、新闻媒体" in t)
         assert o_idx < m_idx
 
     def test_counts_correct(self):
@@ -51,7 +51,7 @@ class TestWordOfficialAdvanced:
         combined = " ".join(texts)
         assert "新闻总数：3条" in combined
         assert "官方信源：2条" in combined
-        assert "媒体新闻：1条" in combined
+        assert "新闻媒体：1条" in combined
         assert "来源：台湾总统府" in combined
         assert "类型：新闻稿" in combined
 

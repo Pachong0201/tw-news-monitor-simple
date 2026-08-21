@@ -21,7 +21,7 @@ deployment:
     app_secret_env: FEISHU_APP_SECRET
     chat_id_env: FEISHU_CHAT_ID
     send_summary: true
-    send_artifact: false          # Webhook-only 环境必须保持 false
+    send_artifact: true           # app_file_upload 正式模式必须上传 Word
   paths:
     evidence_packages: data/reports/tainan_2026/evidence_packages
     generated_reports: data/reports/tainan_2026/generated_reports

@@ -35,6 +35,9 @@ class TestPromptBuilder:
     def test_schema_loaded(self):
         schema = load_output_schema()
         assert schema["additionalProperties"] is False
+        assert schema["properties"]["schema_version"]["const"] == "2.0"
+        assert "core_assessments" in schema["properties"]
+        assert "conclusion_summary" in schema["properties"]
 
     def test_cache_key_contains_components(self):
         base = dict(
@@ -65,4 +68,4 @@ class TestPromptBuilder:
 
     def test_prompt_manifest_versions(self):
         m = build_prompt_manifest("mock", "m")
-        assert m["prompt_versions"] == {"system": "v1.1", "writer": "v1.1", "repair": "v1.1"}
+        assert m["prompt_versions"] == {"system": "2.0", "writer": "2.0", "repair": "2.0"}

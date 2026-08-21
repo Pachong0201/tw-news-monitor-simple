@@ -63,7 +63,7 @@ config/sources.yaml
 
 ### 来源与采集器
 
-来源定义在 `config/sources.yaml`，支持 6 种采集器类型（`app/collectors/`）：
+来源定义在 `config/sources.yaml`，主要采集器类型如下（`app/collectors/`）：
 
 | 类型 | 采集器 | 说明 |
 |---|---|---|
@@ -71,11 +71,23 @@ config/sources.yaml
 | `udn` | UDNCollector | 联合新闻网 HTML 列表页 |
 | `ebc` | EBCCollector | 东森新闻 HTML 列表页 |
 | `cna_list_html` | CNAHtmlCollector | 中央社列表页 |
+| `zaobao` | ZaobaoCollector | 联合早报（官方 Google News Sitemap，含发布时间） |
 | `ltn_rss` | LtnRSSCollector | 自由时报 RSS |
 | `president_json` | PresidentCollector | 总统府新闻稿 API/JSON |
+| `reuters` | ReutersCollector | Reuters 官方新闻 sitemap，仅元数据 |
+| `ft_alphaville` | FTAlphavilleCollector | FT Alphaville 官方 RSS，仅 feed 摘要 |
+| `wsj_rss` | WSJRSSCollector | WSJ 官方冻结 RSS，Phase I 默认停用 |
 
 采集器规则：单来源上限 20 条、空标题/空 URL 跳过、统一设置超时与 User-Agent、不抓取正文、单来源故障不中断整体。
 采集器本身不做关键词过滤；关注范围过滤由入库前的 `config/content_filter.yaml` 统一执行（默认剔除经济栏目里的彩票开奖、美食消费、营销活动、职场生活等社会琐事，可随时增删关键词）。
+
+### 国际媒体免费监测层 Phase I
+
+- Reuters 与 FT Alphaville collector 已接入现有 Article、SQLite、freshness、importance、Word 与通知链；生产 `config/sources.yaml` 默认保持关闭，由人工决定启用。
+- WSJ RSS 已冻结且条目为 PAID，Bloomberg robots 限制 Python/feed 聚合器；两者 Phase I 仅保留本地 NewsletterAdapter，不抓订阅正文、不接邮箱 OAuth。
+- 国际稿全部可按 URL 入库，但只有新鲜且与台湾/两岸/涉台国际政策相关的文章进入简报。跨媒体近似事件只在显示层合并，数据库不删除各媒体 URL。
+- `metadata_only`、`newsletter` 以及其他显式国际 access level 不进入正文或 meta-description 网络抓取。
+- 独立真实验收见 `validation/international_phase1/`，不会使用生产数据库、Scheduler 或飞书。
 
 ### 去重机制（`article_identity.py`）
 
@@ -274,10 +286,10 @@ tw-news-monitor-simple/
 ## 七、测试
 
 ```bash
-python -m pytest -q      # 629 passed, 4 skipped（全离线，不联网）
+python -m pytest -q      # 2564 passed, 4 skipped（2026-08-14）
 ```
 
-测试覆盖：采集器解析（离线 fixture）、去重/身份键、时效/重要度、Word 生成、通知渠道、配置校验、民调校验，以及 election_context 全部门禁（RT02/RT03/RT04 转换预览、发布门禁、来源校正、结项快照、种子↔DB 等价、哈希不变）。
+测试覆盖：采集器解析（含国际媒体真实结构离线 fixture）、去重/身份键、时效/重要度、国际相关性与跨媒体显示去重、Word 生成、通知渠道、配置校验、民调校验，以及 election_context 全部门禁（RT02/RT03/RT04 转换预览、发布门禁、来源校正、结项快照、种子↔DB 等价、哈希不变）。
 
 ## 八、维护注意事项
 

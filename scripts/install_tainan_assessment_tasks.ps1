@@ -27,6 +27,10 @@ $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"`"$BatPath`"`" -Mode $Mode" -WorkingDirectory $ProjectDir
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 2) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
+$xmlMonths = "<January/><February/><March/><April/><May/><June/><July/><August/><September/><October/><November/><December/>"
+$xmlUser = [System.Security.SecurityElement]::Escape($userId)
+$xmlProjectDir = [System.Security.SecurityElement]::Escape($ProjectDir)
+$xmlArguments = [System.Security.SecurityElement]::Escape('/d /c call "' + $BatPath + '" -Mode ' + $Mode)
 
 foreach ($t in $tasks) {
     Write-Host "任务名称：$($t.Name)"
@@ -39,14 +43,50 @@ foreach ($t in $tasks) {
     Write-Host "失败重试策略：MultipleInstances=IgnoreNew, StartWhenAvailable, 限时2小时"
     Write-Host ""
     if (-not $DryRun) {
-        $trigger = New-ScheduledTaskTrigger -Monthly -DaysOfMonth $t.Day -At $RunTime
+        # New-ScheduledTaskTrigger 没有 Monthly 参数；使用任务计划程序原生 XML 月触发器。
+        $startBoundary = (Get-Date -Hour $hour -Minute $minute -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")
+        $description = [System.Security.SecurityElement]::Escape("台南选情半月研判 - 每月 $($t.Day) 日生成")
+        $taskXml = @"
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>$description</Description></RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>$startBoundary</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByMonth>
+        <DaysOfMonth><Day>$($t.Day)</Day></DaysOfMonth>
+        <Months>$xmlMonths</Months>
+      </ScheduleByMonth>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>$xmlUser</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>cmd.exe</Command>
+      <Arguments>$xmlArguments</Arguments>
+      <WorkingDirectory>$xmlProjectDir</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"@
         $params = @{
             TaskName = $t.Name
-            Action = $action
-            Trigger = $trigger
-            Settings = $settings
-            Principal = $principal
-            Description = "台南选情半月研判 - 每月 $($t.Day) 日生成"
+            Xml = $taskXml
         }
         if ($Force) { $params.Force = $true }
         Register-ScheduledTask @params

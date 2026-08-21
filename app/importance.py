@@ -53,13 +53,34 @@ class ImportanceResult:
 
 
 def load_rules(config_path: str | Path) -> dict:
-    """Load importance rules from YAML config."""
-    with open(config_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    """Load importance rules from YAML config, failing closed on bad input.
 
+    Importance is a delivery gate.  A malformed YAML file must never reach
+    ``score_article`` with a list/string where a mapping is expected.  The
+    safe disabled shape keeps the Taiwan pipeline alive while making the
+    configuration error visible in the log.
+    """
+    disabled = {"enabled": False, "thresholds": {}, "rules": []}
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    except Exception as exc:
+        logger.warning("Failed to load importance rules %s: %s", config_path, exc)
+        return disabled
+
+    if not isinstance(config, dict):
+        logger.warning("Importance rules %s is not a mapping; disabled", config_path)
+        return disabled
+    errors = validate_rules_config(config)
+    if errors:
+        logger.warning(
+            "Invalid importance rules %s; disabled: %s",
+            config_path,
+            "; ".join(errors),
+        )
+        return disabled
     if not config.get("enabled", True):
-        return {"enabled": False, "thresholds": {}, "rules": []}
-
+        return disabled
     return config
 
 
@@ -135,6 +156,14 @@ def _official_source_bonus(source_name: str, scoring: dict) -> int:
     return 0
 
 
+def _tier1_international_bonus(source_name: str, scoring: dict) -> int:
+    """Tier-1 国际媒体来源加分（与 official_source_bonus 同模式，默认 +3）。"""
+    tier1_names = [s.lower() for s in scoring.get("tier1_international_media", [])]
+    if source_name and source_name.lower() in tier1_names:
+        return int(scoring.get("tier1_international_bonus", 3))
+    return 0
+
+
 def _category_bonus(category: str, scoring: dict) -> int:
     cat_map = scoring.get("category_bonus", {}) or {}
     if category and category.lower() in cat_map:
@@ -186,6 +215,11 @@ def score_article(
         if official_bonus:
             score += official_bonus
             reasons.append("官方来源")
+
+        tier1_bonus = _tier1_international_bonus(source_name, scoring)
+        if tier1_bonus:
+            score += tier1_bonus
+            reasons.append("国际媒体")
 
         cat_bonus = _category_bonus(category, scoring)
         if cat_bonus:
@@ -334,15 +368,19 @@ def validate_rules_config(config: dict) -> list[str]:
     Returns a list of human-readable errors (empty when valid).
     """
     errors = []
+    if not isinstance(config, dict):
+        return ["config must be a mapping"]
     if not isinstance(config.get("enabled"), bool):
         errors.append("enabled must be a boolean")
     if not config.get("enabled", True):
         return errors
 
     th = config.get("thresholds", {})
+    if not isinstance(th, dict):
+        return ["thresholds must be a mapping"]
     for level in ("critical", "important", "normal"):
         val = th.get(level)
-        if not isinstance(val, int):
+        if not isinstance(val, int) or isinstance(val, bool):
             errors.append(f"thresholds.{level} must be an integer")
     if (
         isinstance(th.get("critical"), int)
@@ -357,7 +395,10 @@ def validate_rules_config(config: dict) -> list[str]:
     ):
         errors.append("important threshold must be > normal threshold")
 
-    display = config.get("display", {}) or {}
+    display = config.get("display", {})
+    if not isinstance(display, dict):
+        errors.append("display must be a mapping")
+        display = {}
     if display:
         max_h = display.get("max_highlights")
         if not isinstance(max_h, int) or max_h < 1:
@@ -367,33 +408,69 @@ def validate_rules_config(config: dict) -> list[str]:
     if not isinstance(total_cap, int) or total_cap < 1:
         errors.append("total_cap must be an integer >= 1")
 
-    lanes = config.get("lanes", {}) or {}
-    election_lane = lanes.get("election", {}) or {}
+    lanes = config.get("lanes", {})
+    if not isinstance(lanes, dict):
+        errors.append("lanes must be a mapping")
+        lanes = {}
+    election_lane = lanes.get("election", {})
+    if not isinstance(election_lane, dict):
+        errors.append("lanes.election must be a mapping")
+        election_lane = {}
     if election_lane:
         min_slots = election_lane.get("min_slots")
         if not isinstance(min_slots, int) or min_slots < 0:
             errors.append("lanes.election.min_slots must be an integer >= 0")
 
-    scoring = config.get("scoring", {}) or {}
+    scoring = config.get("scoring", {})
+    if not isinstance(scoring, dict):
+        errors.append("scoring must be a mapping")
+        scoring = {}
     if scoring:
-        for key in ("official_source_bonus", "multi_rule_bonus"):
+        for key in ("official_source_bonus", "multi_rule_bonus", "tier1_international_bonus"):
             if key in scoring and (
                 not isinstance(scoring[key], int) or scoring[key] < 0
             ):
                 errors.append(f"scoring.{key} must be an integer >= 0")
-        if "official_sources" in scoring and not isinstance(
-            scoring["official_sources"], list
-        ):
-            errors.append("scoring.official_sources must be a list")
+        for key in ("official_sources", "tier1_international_media"):
+            if key in scoring and (
+                not isinstance(scoring[key], list)
+                or any(not isinstance(item, str) or not item.strip() for item in scoring[key])
+            ):
+                errors.append(f"scoring.{key} must be a non-empty string list")
         if "category_bonus" in scoring and not isinstance(
             scoring["category_bonus"], dict
         ):
             errors.append("scoring.category_bonus must be a dict")
+        elif "category_bonus" in scoring and any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in scoring["category_bonus"].values()
+        ):
+            errors.append("scoring.category_bonus values must be integers")
+        # 硬约束：tier1 加分不得超过 official 加分上限
+        official_b = scoring.get("official_source_bonus")
+        tier1_b = scoring.get("tier1_international_bonus")
+        if (
+            isinstance(official_b, int)
+            and isinstance(tier1_b, int)
+            and tier1_b > official_b
+        ):
+            errors.append(
+                "scoring.tier1_international_bonus must not exceed "
+                "scoring.official_source_bonus"
+            )
 
     rules = config.get("rules", [])
+    if not isinstance(rules, list):
+        return [*errors, "rules must be a list"]
     rule_ids = set()
     for i, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            errors.append(f"rule {i}: must be a mapping")
+            continue
         rid = rule.get("id", f"<rule {i}>")
+        if not isinstance(rid, str) or not rid.strip():
+            errors.append(f"rule {i}: id must be a non-empty string")
+            rid = f"<rule {i}>"
         if rid in rule_ids:
             errors.append(f"duplicate rule id: {rid}")
         rule_ids.add(rid)
@@ -413,6 +490,20 @@ def validate_rules_config(config: dict) -> list[str]:
             errors.append(
                 f"rule {rid}: level_cap must be one of {list(ALLOWED_LEVEL_CAPS)}"
             )
+
+        for key in ("subjects", "actions", "scenes", "negative"):
+            if key in rule and (
+                not isinstance(rule[key], list)
+                # Existing rules intentionally use integer year/section
+                # markers (for example ``2026`` and ``520``); scoring
+                # normalizes keywords with ``str``.  Keep those compatible,
+                # while rejecting mappings, floats and booleans.
+                or any(
+                    not isinstance(item, (str, int)) or isinstance(item, bool)
+                    for item in rule[key]
+                )
+            ):
+                errors.append(f"rule {rid}: {key} must be a list of scalar keywords")
 
         has_content = any(rule.get(k) for k in ("subjects", "actions", "scenes"))
         if not has_content:

@@ -15,6 +15,10 @@ class InstanceLock:
         self._fd: int | None = None
         self._acquired = False
 
+    @property
+    def path(self) -> Path:
+        return self._lock_path
+
     def acquire(self) -> bool:
         """Try to acquire the lock. Returns True if successful."""
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +47,7 @@ class InstanceLock:
         if self._fd is not None:
             try:
                 if self._acquired:
+                    os.lseek(self._fd, 0, os.SEEK_SET)
                     msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
             except OSError:
                 pass

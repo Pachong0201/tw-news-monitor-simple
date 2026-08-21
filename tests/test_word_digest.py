@@ -1,5 +1,6 @@
 import tempfile
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,8 @@ from docx import Document
 
 from app.models import Article
 from app.word_digest import build_word_digest
+from app.international import load_international_config
+from app.international_translation import FakeTranslator, TranslationResult, translate_article
 
 
 def make_article(**kwargs):
@@ -150,3 +153,121 @@ class TestWordDigest:
             doc = Document(str(output))
             xml = doc.element.xml
             assert "w:hyperlink" in xml
+
+    def test_international_missing_translation_uses_english_metadata_only(self, tmp_path):
+        """A missing mapping never invents a Chinese title or summary."""
+        config = load_international_config()
+        article = make_article(
+            source_id="reuters_international",
+            source_name="Reuters",
+            category="international",
+            title="China announces new measures for Taiwan",
+            url="https://example.test/metadata-only",
+        )
+        article.summary = "The statement described measures for Taiwan."
+        output = build_word_digest(
+            [article], tmp_path,
+            international_config=config,
+            international_translations={},
+        )
+        texts = [p.text for p in Document(output).paragraphs]
+        assert any("英文原题：China announces new measures for Taiwan" in text for text in texts)
+        assert any("英文摘要：The statement described measures for Taiwan." in text for text in texts)
+        assert not any("中文摘要：" in text for text in texts)
+        assert not any("中国" in text and "标题" in text for text in texts)
+
+    def test_international_real_translation_mapping_renders_chinese_fields(self, tmp_path):
+        config = load_international_config()
+        article = make_article(
+            source_id="reuters_international",
+            source_name="Reuters",
+            category="international",
+            title="Taiwan military drills",
+            url="https://example.test/translated",
+        )
+        article.summary = "Military drills were announced near Taiwan."
+        translated = translate_article(article, FakeTranslator())
+        output = build_word_digest(
+            [article], tmp_path,
+            international_config=config,
+            international_translations={article.url: translated},
+        )
+        texts = [p.text for p in Document(output).paragraphs]
+        assert any("台湾 军事演习" in text for text in texts)
+        assert any("英文摘要：Military drills were announced near Taiwan." in text for text in texts)
+        assert any("中文摘要：" in text for text in texts)
+        assert any("系统判断：" in text for text in texts)
+
+    def test_llm_summary_is_not_mislabeled_as_english_summary(self, tmp_path):
+        config = load_international_config()
+        article = make_article(
+            source_name="Reuters",
+            title="Taiwan military drills begin",
+            summary="这是既有的中文模型梗概。",
+        )
+        article.summary_source = "llm"
+        translated = TranslationResult(
+            status="translated",
+            cn_title="台湾军演启动",
+            cn_summary="台湾启动军事演习。",
+            limitation="",
+            body_fetch_count=0,
+        )
+        output = build_word_digest(
+            [article], tmp_path, international_config=config,
+            international_translations={article.url: translated},
+        )
+        texts = [p.text for p in Document(output).paragraphs]
+        assert any("英文摘要：未提供合法英文摘要。" in text for text in texts)
+        assert any("中文摘要：台湾启动军事演习。" in text for text in texts)
+        assert not any("英文摘要：这是既有的中文模型梗概。" in text for text in texts)
+
+    def test_fallback_mapping_cannot_smuggle_chinese_fields(self, tmp_path):
+        config = load_international_config()
+        article = make_article(
+            source_id="reuters_international",
+            source_name="Reuters",
+            category="international",
+            title="Taiwan update",
+            url="https://example.test/fallback-status",
+        )
+        article.summary = "An English teaser."
+        fallback = TranslationResult(
+            cn_title="伪造中文标题",
+            cn_summary="伪造中文摘要",
+            status="fallback",
+            limitation="provider unavailable",
+            body_fetch_count=0,
+        )
+        output = build_word_digest(
+            [article], tmp_path,
+            international_config=config,
+            international_translations={article.url: fallback},
+        )
+        texts = [p.text for p in Document(output).paragraphs]
+        assert not any("伪造中文" in text for text in texts)
+        assert any("英文原题：Taiwan update" in text for text in texts)
+        assert any("英文摘要：An English teaser." in text for text in texts)
+        assert not any("中文摘要：" in text for text in texts)
+
+    def test_same_input_produces_byte_deterministic_docx(self, tmp_path):
+        config = load_international_config()
+        article = make_article(
+            source_id="reuters_international",
+            source_name="Reuters",
+            category="international",
+            title="Taiwan update",
+            url="https://example.test/deterministic",
+            published_at=datetime(2026, 7, 14, 20, 30),
+        )
+        article.summary = "A public teaser."
+        generated_at = datetime(2026, 8, 15, 10, 0)
+        first = build_word_digest(
+            [article], tmp_path / "one", generated_at=generated_at,
+            international_config=config,
+        )
+        second = build_word_digest(
+            [article], tmp_path / "two", generated_at=generated_at,
+            international_config=config,
+        )
+        assert sha256(first.read_bytes()).digest() == sha256(second.read_bytes()).digest()

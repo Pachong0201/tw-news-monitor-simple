@@ -52,6 +52,8 @@ class TestCli:
             "report_generation_manifest.json",
             "report_generation_validation.json",
             "report_generation_idempotency.json",
+            "request_correlation.json",
+            "provider_response_metadata.json",
         ):
             assert (out / name).exists(), name
         final = json.loads((out / "structured_report_final.json").read_text(encoding="utf-8"))
@@ -63,6 +65,28 @@ class TestCli:
         assert validation["generated_report_mode"] == "draft_with_data_gap"
         assert validation["required_disclosures_complete"] is True
         assert validation["do_not_infer_compliant"] is True
+
+    def test_client_request_id_links_run_validation_and_manifest(self, tmp_path, monkeypatch):
+        assert _run(_common_args(tmp_path) + ["--allow-draft-with-gap"], monkeypatch) == 0
+        out = tmp_path / "2026-07-16_2026-07-31"
+        correlation = json.loads((out / "request_correlation.json").read_text(encoding="utf-8"))
+        validation = json.loads(
+            (out / "claim_evidence_validation_attempt_1.json").read_text(encoding="utf-8")
+        )
+        manifest = json.loads(
+            (out / "report_generation_manifest.json").read_text(encoding="utf-8")
+        )
+        metadata = json.loads(
+            (out / "provider_response_metadata.json").read_text(encoding="utf-8")
+        )
+        client_id = correlation["client_request_id"]
+        assert client_id
+        assert validation["client_request_id"] == client_id
+        assert manifest["client_request_id"] == client_id
+        assert metadata["client_request_id"] == client_id
+        assert manifest["provider_request_id"] == (manifest["response_id"] or None)
+        prompt_payload = (out / "llm_request_payload.json").read_text(encoding="utf-8")
+        assert client_id not in prompt_payload
 
     def test_validate_only_no_writes(self, tmp_path, monkeypatch):
         code = _run(

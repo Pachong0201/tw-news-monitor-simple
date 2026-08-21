@@ -11,6 +11,7 @@ lanes:
     min_slots: 1
 scoring:
   official_source_bonus: 5
+  tier1_international_bonus: 3   # Tier-1 国际媒体加分（<= official_source_bonus，validate_rules_config 校验）
   multi_rule_bonus: 5
   category_bonus:
     politics: 3
@@ -23,6 +24,12 @@ scoring:
   - 外交部
   - 陸委會
   - 中央社
+  # Tier-1 国际媒体（与 config/international_media.yaml tier1_international_media 同步）
+  tier1_international_media:
+  - Reuters
+  - Financial Times
+  - Wall Street Journal
+  - Bloomberg
 feishu_highlight_card:
   enabled: true
   title: "本期重点新闻提示"

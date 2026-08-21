@@ -14,7 +14,11 @@ class RSSCollector(BaseCollector):
 
     def collect(self) -> list[Article]:
         resp = self.client.get(self.url)
+        resp.raise_for_status()
         feed = feedparser.parse(resp.text)
+        if not feed.entries and feed.get("bozo"):
+            error = feed.get("bozo_exception")
+            raise ValueError(f"RSS feed parse error: {error or 'no valid entries'}")
         articles: list[Article] = []
         now = datetime.now()
 

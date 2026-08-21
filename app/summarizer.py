@@ -34,6 +34,7 @@ DEFAULT_MAX_LENGTH = 150
 DEFAULT_BATCH_SIZE = 40
 DEFAULT_CONTENT_CHARS = 800
 DEFAULT_RETRY_HOURS = 6
+SENTENCE_ENDINGS = frozenset("。！？!?")
 META_TIMEOUT = 15.0
 META_MAX_WORKERS = 5
 META_USER_AGENT = (
@@ -43,6 +44,11 @@ META_USER_AGENT = (
 )
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "summarize.md"
+TRANSLATION_SYSTEM_PROMPT = (
+    "你是国际新闻翻译助手。仅根据提供的英文标题、英文导语和媒体名称，"
+    "返回严格 JSON 对象：{\"title\": \"繁体中文标题\", \"summary\": \"繁体中文摘要\"}。"
+    "不得使用外部知识、不得补充事实、不得访问或要求文章链接或正文；摘要必须是完整句子。"
+)
 
 
 def _int_env(name: str, default: int) -> int:
@@ -61,6 +67,67 @@ def summarizer_mode() -> str:
     return mode
 
 
+def truncate_to_complete_sentence(text: str, max_length: int = DEFAULT_MAX_LENGTH) -> str:
+    """Keep a complete sentence within the target length when possible.
+
+    The length limit is intentionally soft: returning an intact source teaser
+    is preferable to fabricating an ellipsis in the middle of a sentence.
+    """
+    text = (text or "").strip()
+    if len(text) <= max_length:
+        return text
+    endings = [index for index, char in enumerate(text[:max_length]) if char in SENTENCE_ENDINGS]
+    if endings:
+        return text[: endings[-1] + 1].rstrip()
+    return text
+
+
+def summary_needs_rewrite(article: Article, max_length: int = DEFAULT_MAX_LENGTH) -> bool:
+    """Return whether an existing summary has the old visible hard-cut marker."""
+    summary = (getattr(article, "summary", None) or "").strip()
+    del max_length
+    return bool(summary) and summary.endswith("…")
+
+
+def _env_truthy(name: str) -> bool:
+    load_dotenv()
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def translate_metadata(
+    title: str,
+    summary: str | None,
+    *,
+    source_name: str,
+) -> tuple[str, str]:
+    """Translate supplied international metadata without fetching article content."""
+    if not _env_truthy("INTERNATIONAL_TRANSLATION_ENABLED"):
+        raise RuntimeError("international metadata translation is disabled")
+    client = _load_deepseek_client()
+    if client is None:
+        raise RuntimeError("international metadata translation client unavailable")
+    payload = {
+        "title": (title or "").strip(),
+        "summary": (summary or "").strip(),
+        "source_name": (source_name or "").strip(),
+    }
+    response = client.analyze(
+        TRANSLATION_SYSTEM_PROMPT,
+        json.dumps(payload, ensure_ascii=False),
+    )
+    if response.get("status") != "success":
+        raise RuntimeError(response.get("error", "international metadata translation failed"))
+    cn_title = response.get("title")
+    cn_summary = response.get("summary")
+    if not isinstance(cn_title, str) or not isinstance(cn_summary, str):
+        raise ValueError("international metadata translation returned invalid fields")
+    cn_title = cn_title.strip()
+    cn_summary = truncate_to_complete_sentence(cn_summary, _int_env("SUMMARIZER_MAX_LENGTH", DEFAULT_MAX_LENGTH))
+    if not cn_title or not cn_summary:
+        raise ValueError("international metadata translation returned empty fields")
+    return cn_title, cn_summary
+
+
 def clean_rss_summary(text: str, max_length: int = DEFAULT_MAX_LENGTH) -> str | None:
     """Strip HTML and collapse whitespace from a feed teaser."""
     if not text:
@@ -71,9 +138,7 @@ def clean_rss_summary(text: str, max_length: int = DEFAULT_MAX_LENGTH) -> str | 
     plain = _strip_leading_captions(plain)
     if not plain:
         return None
-    if len(plain) > max_length:
-        return plain[: max_length - 1].rstrip() + "…"
-    return plain
+    return truncate_to_complete_sentence(plain, max_length)
 
 
 def _strip_leading_captions(text: str) -> str:
@@ -189,8 +254,7 @@ def parse_summaries_response(
         text = re.sub(r"\s+", " ", text).strip()
         if len(text) < 5:
             continue
-        if len(text) > max_length:
-            text = text[: max_length - 1].rstrip() + "…"
+        text = truncate_to_complete_sentence(text, max_length)
         result[url] = text
     return result
 
@@ -373,6 +437,11 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
 
     RSS teasers are already attached by collectors; this fills the gaps by
     fetching article content (hybrid) and calling DeepSeek in batches.
+
+    Articles with an explicit ``access_level`` belong to the international
+    media layer. Their collector/newsletter metadata is the legal boundary:
+    they may receive a title/teaser-only LLM summary, but this function must
+    never fetch their article page or meta description.
     """
     if not articles:
         return articles
@@ -392,27 +461,41 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
                 at = at.replace(tzinfo=timezone.utc)
             return (now - at).total_seconds() > retry_hours * 3600
 
-        pending = [a for a in articles if not a.summary and _retryable(a)]
+        def _needs_summary(a: Article) -> bool:
+            return not a.summary or summary_needs_rewrite(a)
+
+        def _eligible(a: Article) -> bool:
+            # A trailing ellipsis is a known old hard-cut bug and should be
+            # repaired immediately on the next export instead of waiting for
+            # the normal negative-cache window.
+            return bool((a.summary or "").strip().endswith("…")) or _retryable(a)
+
+        pending = [a for a in articles if _needs_summary(a) and _eligible(a)]
         if not pending:
             return articles
+
+        page_fetch_pending = [a for a in pending if a.access_level is None]
 
         llm_summaries: dict[str, str] = {}
         meta_summaries: dict[str, str] = {}
         contents: dict[str, str] = {}
 
+        empty_urls: list[str] = []
         if mode == "hybrid":
-            contents, empty_urls = fetch_article_contents(pending)
+            contents, empty_urls = fetch_article_contents(page_fetch_pending)
         if mode in ("llm", "hybrid"):
             llm_summaries.update(summarize_with_deepseek(pending, contents=contents))
 
-        remaining = [a for a in pending if a.url not in llm_summaries]
+        remaining = [
+            a for a in page_fetch_pending if a.url not in llm_summaries
+        ]
         if remaining and (
             mode == "meta" or (mode == "hybrid" and not deepseek_available())
         ):
             meta_summaries.update(fetch_meta_descriptions(remaining))
 
         for article in articles:
-            if article.summary:
+            if article not in pending:
                 continue
             if article.url in llm_summaries:
                 article.summary = llm_summaries[article.url]
@@ -440,7 +523,11 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
                         if url not in llm_summaries and url not in meta_summaries
                     ]
                 elif mode == "meta":
-                    failed = [a.url for a in pending if a.url not in meta_summaries]
+                    failed = [
+                        a.url
+                        for a in page_fetch_pending
+                        if a.url not in meta_summaries
+                    ]
                 else:
                     failed = []
                 if failed:

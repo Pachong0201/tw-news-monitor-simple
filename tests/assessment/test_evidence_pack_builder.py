@@ -7,6 +7,7 @@ import pytest
 from app.assessment.evidence_pack_builder import (
     EvidencePackError,
     FormalData,
+    build_pack,
     build_active_research_tasks,
     build_coverage_gaps,
     build_do_not_infer,
@@ -22,6 +23,7 @@ from app.assessment.evidence_pack_builder import (
     select_previous_snapshot,
     uncovered_range,
 )
+from app.assessment.reporting_period import ReportingPeriod
 
 
 def _event(eid, event_date, subevents=None, sources=None, sig=50):
@@ -266,6 +268,38 @@ class TestNormalizeEvent:
         norm = normalize_event(ev)
         assert norm["verified_facts"] == ["f1", "f2"]
 
+    def test_structured_assertions_preserve_existing_fact_and_statement_metadata(self):
+        analysis = {
+            "verified_facts": [
+                {"fact_id": "f1", "fact": "甲举行记者会", "source_ids": ["s1"], "confidence": 0.99}
+            ],
+            "candidate_claims": [
+                {"claim_id": "c1", "speaker": "甲", "claim": "乙确有问题", "source_ids": ["s1"], "confidence": 0.8}
+            ],
+            "research_claims": [
+                {"speaker": "甲", "claim": "合作已有进展", "claim_status": "candidate_claim_unverified", "source_ids": ["s1"]}
+            ],
+            "media_interpretations": [
+                {"interpretation_id": "m1", "interpretation": "媒体认为攻防升温", "source_ids": ["s1"]}
+            ],
+        }
+        ev = {
+            "event_id": "e1",
+            "election_id": "E",
+            "occurred_at": "2026-05-04T00:00:00+08:00",
+            "event_type": "campaign_attack",
+            "title": "t",
+            "analysis_json": json.dumps(analysis, ensure_ascii=False),
+            "sources": [{"source_id": "s1"}],
+        }
+        assertions = normalize_event(ev)["evidence_assertions"]
+        by_type = {item["assertion_type"]: item for item in assertions}
+        assert by_type["observed_fact"]["assertion_id"] == "f1"
+        assert by_type["allegation"]["speaker"] == "甲"
+        assert by_type["allegation"]["source_ids"] == ["s1"]
+        assert by_type["actor_statement"]["assertion_status"] == "candidate_claim_unverified"
+        assert by_type["media_interpretation"]["assertion_id"] == "m1"
+
 
 class TestSnapshotsAndCoverage:
     def test_active_snapshot_unique(self):
@@ -400,6 +434,56 @@ class TestCoverageAndLimits:
         assert "禁止1" in dnis
         assert "全国协议不等于全市整合" in dnis
         assert "RT05: 不要假设" in dnis
+
+    def test_preflight_facts_cutoff_overrides_stale_snapshot_value(self):
+        formal = _formal(
+            active_snapshot={
+                "snapshot_id": "tn_state_stale",
+                "election_id": "TW-2026-TNN-MAYOR",
+                "as_of": "2026-08-01",
+                "created_at": "2026-08-01T00:00:00+08:00",
+                "state": {
+                    "coverage": {
+                        "facts_cutoff": "2026-07-27",
+                        "poll_cutoff": "2026-03-12",
+                    }
+                },
+            },
+            coverage_preflight={
+                "facts_cutoff": "2026-08-08",
+                "poll_cutoff": "2026-03-12",
+            },
+            counts={
+                "formal_event_count": 0,
+                "formal_source_count": 0,
+                "formal_link_count": 0,
+                "formal_poll_count": 0,
+            },
+            coverage_name="fact_coverage_20260809_v5",
+        )
+        period = ReportingPeriod(
+            timezone="Asia/Taipei",
+            run_at="2026-08-09T00:00:00+08:00",
+            run_date="2026-08-09",
+            resolution_mode="scheduled",
+            period_start=date(2026, 7, 16),
+            period_end=date(2026, 7, 31),
+            period_label="2026-07-16至2026-07-31",
+            previous_period_start=date(2026, 7, 1),
+            previous_period_end=date(2026, 7, 15),
+            period_complete=True,
+            scheduled_run_date="2026-08-09",
+            calendar_lag_days=9,
+            full_preparation_days=8,
+        )
+        config = {
+            "election": {"election_id": "tainan_mayoral_2026", "display_name": "台南市长选举"},
+            "evidence_pack": {"include_background_events": False},
+        }
+        pack = build_pack(formal, period, config, Path("."))
+        assert pack["data_status"]["facts_cutoff"] == "2026-08-08"
+        assert pack["data_status"]["report_period_fully_covered_by_facts"] is True
+        assert pack["generation_eligibility"]["final_report_allowed"] is True
 
 
 def _write_coverage(root: Path, name: str, ready: bool) -> None:

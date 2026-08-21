@@ -1,8 +1,9 @@
 ﻿import pytest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from app.database import Database
 from app.models import Article
-from app.main import _classify_delivery_articles
+from app.main import _classify_delivery_articles, _get_source_baselines
 
 TAIPEI = ZoneInfo("Asia/Taipei")
 RUN = datetime(2026, 7, 19, 9, 44, tzinfo=TAIPEI)
@@ -42,6 +43,22 @@ def test_new_source_baseline():
     assert len(result["catch_up_urls"]) == 0
     assert len(result["stale_articles"]) == 1
     assert len(result["baseline_excluded"]) == 1
+
+
+def test_source_baseline_snapshot_is_taken_before_insert(tmp_path):
+    db = Database(tmp_path / "baseline.db")
+    db.connect()
+    db.create_tables()
+    sources = [{"id": "new_source"}]
+
+    before_insert = _get_source_baselines(db, sources)
+    db.save_article(make(mins=120, sid="new_source", url="https://t.com/new"))
+    after_insert = _get_source_baselines(db, sources)
+
+    assert before_insert == {"new_source": 0}
+    assert after_insert == {"new_source": 1}
+    assert before_insert["new_source"] == 0
+    db.close()
 
 # Test 4: New source fresh still pushes
 def test_new_source_fresh():

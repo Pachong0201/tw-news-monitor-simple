@@ -31,10 +31,12 @@ from .report_prompt_builder import (
 )
 from .report_repair import build_repair_messages, is_repairable
 from .report_renderer import render_report_markdown
+from .report_structure_validator import derive_claims_and_sections
 from .production_preflight import build_preflight, render_live_review, write_preflight
 
 
-GENERATOR_VERSION = "1.1.0"
+GENERATOR_VERSION = "2.0.0"
+REPORT_CONTRACT_VERSION = "2.0"
 
 DEEPSEEK_JSON_ADAPTER = (
     "\n\nDeepSeek JSON 输出适配指令（format_adapter_version=deepseek_json_v1）：\n"
@@ -50,6 +52,18 @@ FORMAT_ADAPTER_VERSIONS = {
     "openai": "openai_strict_json_v1",
     "mock": "mock_json_v1",
 }
+
+
+def compose_deepseek_effective_system_prompt(
+    system_prompt: str, writer_prompt: str
+) -> str:
+    """Compose exactly what is sent as the DeepSeek system message."""
+    return (
+        system_prompt.rstrip()
+        + DEEPSEEK_JSON_ADAPTER
+        + "\n\n正式写作契约（必须完整执行）：\n"
+        + writer_prompt.strip()
+    )
 
 
 def _cache_model(config: dict, provider: str, model: str | None) -> str:
@@ -171,6 +185,271 @@ def _inject_data_context(report: dict, contract: dict) -> bool:
     return previous != authoritative
 
 
+def _apply_deterministic_fixes(report: dict, contract: dict) -> dict[str, Any]:
+    """Fix A 程序确定性修复：披露注入与 Event/Poll→Source 映射回填。
+
+    只处理程序已知数据；不修改模型分析正文；非原子/无证据 claims 不处理。
+    v2.0 研判单元契约走 v2 分支（required_disclosures 为披露文字数组）。
+    """
+    if str(report.get("schema_version") or "") == "2.0":
+        return _apply_deterministic_fixes_v2(report, contract)
+    audit: dict[str, Any] = {"injected_disclosures": [], "source_mappings": []}
+    eligibility = contract.get("generation_eligibility") or {}
+    if eligibility.get("final_report_allowed") is not True:
+        return audit
+
+    def norm(value: str) -> str:
+        return "".join(str(value or "").split())
+
+    data = contract.get("data_status") or {}
+    facts_cutoff = str(data.get("facts_cutoff") or "")
+    poll_cutoff = str(data.get("poll_cutoff") or "")
+    uncovered = list(data.get("uncovered_date_range") or [])
+    poll_gap = (contract.get("evidence_statistics") or {}).get("poll_gap", True)
+    required_texts: list[str] = []
+    if facts_cutoff:
+        required_texts.append(f"正式事实底表仅覆盖至 {facts_cutoff}")
+    if poll_cutoff:
+        required_texts.append(f"正式民调截止至 {poll_cutoff}")
+    if uncovered:
+        required_texts.append("本期未覆盖日期：" + "、".join(uncovered))
+    else:
+        required_texts.append("本期无未覆盖日期。")
+    if poll_gap:
+        required_texts.append("本期没有新增正式民调")
+
+    claims = report.get("claims") or []
+    existing_ids = {c.get("claim_id") for c in claims}
+    existing_disclosure_texts = [
+        norm(c.get("claim_text") or "")
+        for c in claims
+        if c.get("claim_type") == "data_disclosure"
+    ]
+    sections = report.get("sections") or []
+    s08 = next((s for s in sections if s.get("section_id") == "S08"), None)
+
+    next_num = 1
+    for text in required_texts:
+        normalized = norm(text)
+        if any(normalized in t or t in normalized for t in existing_disclosure_texts):
+            continue
+        claim_id = f"DET_DISC_{next_num:03d}"
+        while claim_id in existing_ids:
+            next_num += 1
+            claim_id = f"DET_DISC_{next_num:03d}"
+        next_num += 1
+        claim = {
+            "claim_id": claim_id,
+            "claim_type": "data_disclosure",
+            "claim_text": text,
+            "confidence": "not_applicable",
+            "material_for_report": True,
+            "supporting_event_ids": [],
+            "supporting_poll_ids": [],
+            "supporting_source_ids": [],
+            "supporting_snapshot_dimensions": [],
+            "supporting_gap_ids": [],
+            "inference_basis": "程序确定性披露：facts_cutoff/poll_cutoff 来自权威 Data Context",
+            "limitations": [],
+            "applies_to_period": True,
+        }
+        claims.append(claim)
+        existing_ids.add(claim_id)
+        existing_disclosure_texts.append(normalized)
+        report.setdefault("required_disclosures", []).append(claim_id)
+        if s08 is not None:
+            s08.setdefault("claim_ids", []).append(claim_id)
+        audit["injected_disclosures"].append(claim_id)
+
+    events = {
+        e.get("event_id"): e
+        for e in (contract.get("period_events") or []) + (contract.get("background_events") or [])
+        if e.get("event_id")
+    }
+    polls = {p.get("poll_id"): p for p in (contract.get("polls") or []) if p.get("poll_id")}
+    known_sources = {s.get("source_id") for s in (contract.get("sources") or []) if s.get("source_id")}
+    known_sources |= {
+        sid
+        for p in (contract.get("polls") or [])
+        for sid in (p.get("source_ids") or [])
+    }
+    for claim in claims:
+        event_ids = list(claim.get("supporting_event_ids") or [])
+        poll_ids = list(claim.get("supporting_poll_ids") or [])
+        if not (event_ids or poll_ids):
+            continue
+        allowed: set[str] = set()
+        for eid in event_ids:
+            allowed.update(events.get(eid, {}).get("source_ids") or [])
+        for pid in poll_ids:
+            allowed.update(polls.get(pid, {}).get("source_ids") or [])
+        # 只回填证据包内真实存在的来源，避免引入未知 source_id。
+        allowed &= known_sources
+        current = set(claim.get("supporting_source_ids") or [])
+        unknown_current = current - known_sources
+        known_current = current & known_sources
+        if allowed and known_current != allowed:
+            claim["supporting_source_ids"] = sorted(allowed)
+            audit["source_mappings"].append(
+                {
+                    "claim_id": claim.get("claim_id"),
+                    "previous_sources": sorted(current),
+                    "allowed_sources": sorted(allowed),
+                    "removed_unknown_sources": sorted(unknown_current),
+                }
+            )
+        elif unknown_current:
+            claim["supporting_source_ids"] = sorted(known_current)
+            audit["source_mappings"].append(
+                {
+                    "claim_id": claim.get("claim_id"),
+                    "previous_sources": sorted(current),
+                    "allowed_sources": sorted(allowed),
+                    "removed_unknown_sources": sorted(unknown_current),
+                }
+            )
+    return audit
+
+
+def _apply_deterministic_fixes_v2(report: dict, contract: dict) -> dict[str, Any]:
+    """v2.0 契约的确定性修复：披露文字注入 + 证据来源映射回填。"""
+    audit: dict[str, Any] = {"injected_disclosures": [], "source_mappings": []}
+    eligibility = contract.get("generation_eligibility") or {}
+    if eligibility.get("final_report_allowed") is not True:
+        return audit
+
+    def norm(value: str) -> str:
+        return "".join(str(value or "").split())
+
+    data = contract.get("data_status") or {}
+    facts_cutoff = str(data.get("facts_cutoff") or "")
+    poll_cutoff = str(data.get("poll_cutoff") or "")
+    uncovered = list(data.get("uncovered_date_range") or [])
+    poll_gap = (contract.get("evidence_statistics") or {}).get("poll_gap", True)
+    required_texts: list[str] = []
+    if facts_cutoff:
+        required_texts.append(f"正式事实底表仅覆盖至 {facts_cutoff}")
+    if poll_cutoff:
+        required_texts.append(f"正式民调截止至 {poll_cutoff}")
+    if uncovered:
+        required_texts.append("本期未覆盖日期：" + "、".join(uncovered))
+    else:
+        required_texts.append("本期无未覆盖日期。")
+    if poll_gap:
+        required_texts.append("本期没有新增正式民调")
+
+    disclosures = report.get("required_disclosures") or []
+    existing_texts = [norm(t) for t in disclosures]
+    appendix_ids = {str(item.get("item_id") or "") for item in report.get("appendix") or []}
+    next_num = 1
+    for text in required_texts:
+        normalized = norm(text)
+        if any(normalized in t or t in normalized for t in existing_texts):
+            continue
+        disclosures.append(text)
+        existing_texts.append(normalized)
+        item_id = f"DET_DISC_{next_num:03d}"
+        while item_id in appendix_ids:
+            next_num += 1
+            item_id = f"DET_DISC_{next_num:03d}"
+        next_num += 1
+        appendix_ids.add(item_id)
+        report.setdefault("appendix", []).append(
+            {
+                "item_id": item_id,
+                "item_type": "disclosure",
+                "item_text": text,
+                "evidence_refs": {},
+            }
+        )
+        audit["injected_disclosures"].append(text)
+    report["required_disclosures"] = disclosures
+
+    events = {
+        e.get("event_id"): e
+        for e in (contract.get("period_events") or []) + (contract.get("background_events") or [])
+        if e.get("event_id")
+    }
+    polls = {p.get("poll_id"): p for p in (contract.get("polls") or []) if p.get("poll_id")}
+    known_sources = {s.get("source_id") for s in (contract.get("sources") or []) if s.get("source_id")}
+    known_sources |= {
+        sid
+        for p in (contract.get("polls") or [])
+        for sid in (p.get("source_ids") or [])
+    }
+
+    def backfill_refs(refs: dict, where: str) -> None:
+        event_ids = list(refs.get("event_ids") or [])
+        poll_ids = list(refs.get("poll_ids") or [])
+        if not (event_ids or poll_ids):
+            return
+        allowed: set[str] = set()
+        for eid in event_ids:
+            allowed.update(events.get(eid, {}).get("source_ids") or [])
+        for pid in poll_ids:
+            allowed.update(polls.get(pid, {}).get("source_ids") or [])
+        allowed &= known_sources
+        current = set(refs.get("source_ids") or [])
+        unknown_current = current - known_sources
+        known_current = current & known_sources
+        if allowed and known_current != allowed:
+            refs["source_ids"] = sorted(allowed)
+            audit["source_mappings"].append(
+                {
+                    "where": where,
+                    "previous_sources": sorted(current),
+                    "allowed_sources": sorted(allowed),
+                    "removed_unknown_sources": sorted(unknown_current),
+                }
+            )
+        elif unknown_current:
+            refs["source_ids"] = sorted(known_current)
+            audit["source_mappings"].append(
+                {
+                    "where": where,
+                    "previous_sources": sorted(current),
+                    "allowed_sources": sorted(allowed),
+                    "removed_unknown_sources": sorted(unknown_current),
+                }
+            )
+
+    for index, item in enumerate(report.get("conclusion_summary") or [], 1):
+        backfill_refs(item.setdefault("evidence_refs", {}), f"conclusion_summary[{index}]")
+    for index, assessment in enumerate(report.get("core_assessments") or [], 1):
+        backfill_refs(
+            assessment.setdefault("evidence_refs", {}), f"core_assessments[{index}]"
+        )
+    for index, item in enumerate(report.get("appendix") or [], 1):
+        backfill_refs(item.setdefault("evidence_refs", {}), f"appendix[{index}]")
+    return audit
+
+
+def _enrich_v2_report(report: dict, contract: dict) -> dict:
+    """把 v2 研判单元确定性派生为 claims/sections（供门禁/展示复用），并回填统计。
+
+    派生只读取 v2 结构字段，不修改判断与证据内容；重复执行幂等。
+    """
+    ctx = build_evidence_context(contract, evidence_pack=None, config={})
+    claims, sections = derive_claims_and_sections(report, ctx)
+    report["claims"] = claims
+    report["sections"] = sections
+    conclusion_ids = [
+        c["claim_id"] for c in claims if c.get("_derived_kind") == "conclusion"
+    ]
+    report["title_claim_ids"] = conclusion_ids[:1]
+    report["overall_judgment_claim_ids"] = conclusion_ids
+    stats = report.setdefault("report_statistics", {})
+    stats["claim_count"] = len(claims)
+    stats["section_count"] = len(sections)
+    stats["core_assessment_count"] = len(report.get("core_assessments") or [])
+    stats["conclusion_summary_count"] = len(report.get("conclusion_summary") or [])
+    stats["evidence_item_count"] = sum(
+        len(a.get("evidence_items") or [])
+        for a in report.get("core_assessments") or []
+    )
+    return report
+
+
 def run(
     *,
     config_path: Path,
@@ -232,11 +511,14 @@ def run(
         writer_prompt = load_prompt("writer")
         repair_prompt = load_prompt("repair")
         if provider == "deepseek":
-            system_prompt = system_prompt + DEEPSEEK_JSON_ADAPTER
+            system_prompt = compose_deepseek_effective_system_prompt(
+                system_prompt, writer_prompt
+            )
         hashes = prompt_hashes()
+        effective_system_prompt_hash = sha256_text(system_prompt)
         evidence_business_hash = business_hash(pack)
         contract_hash = sha256_text(json.dumps(contract, ensure_ascii=False, sort_keys=True))
-        schema_hash = sha256_text(json.dumps(schema, ensure_ascii=False, sort_keys=True))
+        schema_hash = canonical_hash(schema)
         resolved_model = _cache_model(config, provider, model)
         llm_cfg = config.get("llm", {}) or {}
         if provider == "deepseek":
@@ -255,7 +537,7 @@ def run(
         cache_key = build_cache_key(
             evidence_business_hash=evidence_business_hash,
             contract_hash=contract_hash,
-            system_prompt_hash=sha256_text(system_prompt),
+            system_prompt_hash=effective_system_prompt_hash,
             writer_prompt_hash=hashes["writer"],
             repair_prompt_hash=hashes["repair"],
             output_schema_hash=schema_hash,
@@ -282,6 +564,7 @@ def run(
         attempt2_validation: dict | None = None
         repair_attempted = False
         provider_result = None
+        client_request_id = ""
         attempt1_report: dict | None = None
         attempt2_report: dict | None = None
 
@@ -292,6 +575,9 @@ def run(
             if cached_manifest.get("cache_key") == cache_key:
                 cached = _load_json(cached_path)
                 _inject_data_context(cached, contract)
+                _apply_deterministic_fixes(cached, contract)
+                if str(cached.get("schema_version") or "") == "2.0":
+                    _enrich_v2_report(cached, contract)
                 cached_validation = validate_structured_report(cached, ctx, expected_mode=expected_mode)
                 if cached_validation.get("all_claims_validated") is True:
                     final_report = cached
@@ -306,7 +592,22 @@ def run(
                 model=model or None,
                 thinking_mode=deepseek_thinking if provider == "deepseek" else "disabled",
             )
-            request_metadata = {"attempt": 1, "generation_id": generation_id}
+            client_request_id = str(uuid.uuid4())
+            request_metadata = {
+                "attempt": 1,
+                "generation_id": generation_id,
+                "client_request_id": client_request_id,
+            }
+            _atomic_write(
+                out_dir / "request_correlation.json",
+                {
+                    "generation_id": generation_id,
+                    "client_request_id": client_request_id,
+                    "provider_request_id": None,
+                    "provider_request_id_supported": None,
+                    "status": "request_prepared",
+                },
+            )
             try:
                 provider_result = provider_instance.generate_structured_report(
                     system_prompt=system_prompt,
@@ -315,6 +616,16 @@ def run(
                     request_metadata=request_metadata,
                 )
             except LLMProviderError as exc:
+                _atomic_write(
+                    out_dir / "request_correlation.json",
+                    {
+                        "generation_id": generation_id,
+                        "client_request_id": client_request_id,
+                        "provider_request_id": None,
+                        "provider_request_id_supported": False,
+                        "status": "provider_error",
+                    },
+                )
                 _atomic_write(
                     out_dir / "report_rejection_summary.md",
                     {"rejection_reason": str(exc), "repair_attempted": False},
@@ -333,6 +644,7 @@ def run(
                     final_validation={"all_claims_validated": False, "errors": [str(exc)]},
                     provider_result=None,
                     formal_unchanged=_compute_formal_unchanged(config, root, pack, ev_dir),
+                    input_business_hash=evidence_business_hash,
                     out_dir=out_dir,
                     cost_estimation_status="not_available",
                     warnings=[str(exc)],
@@ -340,10 +652,28 @@ def run(
                 print(f"ERROR: provider 调用失败: {exc}", file=sys.stderr)
                 return 1
 
+            if not provider_result.client_request_id:
+                provider_result.client_request_id = client_request_id
+                provider_result.request_audit.setdefault(
+                    "client_request_id", client_request_id
+                )
             attempt1_report = provider_result.structured_output
             dc_overridden = _inject_data_context(attempt1_report, contract)
+            det_audit = _apply_deterministic_fixes(attempt1_report, contract)
             attempt1_validation = validate_structured_report(
                 attempt1_report, ctx, expected_mode=expected_mode
+            )
+            if str(attempt1_report.get("schema_version") or "") == "2.0":
+                _enrich_v2_report(attempt1_report, contract)
+            if det_audit["injected_disclosures"] or det_audit["source_mappings"]:
+                attempt1_validation.setdefault("warnings", []).append(
+                    "Fix A: 程序确定性披露/来源映射已应用 "
+                    + json.dumps(det_audit, ensure_ascii=False)
+                )
+            attempt1_validation["client_request_id"] = provider_result.client_request_id
+            attempt1_validation["provider_request_id"] = provider_result.response_id or None
+            attempt1_validation["provider_request_id_supported"] = (
+                provider_result.provider_request_id_supported
             )
             if dc_overridden:
                 attempt1_validation.setdefault("warnings", []).append(
@@ -351,6 +681,28 @@ def run(
                 )
             _atomic_write(out_dir / "structured_report_attempt_1.json", attempt1_report)
             _atomic_write(out_dir / "claim_evidence_validation_attempt_1.json", attempt1_validation)
+            _atomic_write(
+                out_dir / "request_correlation.json",
+                {
+                    "generation_id": generation_id,
+                    "client_request_id": provider_result.client_request_id,
+                    "provider_request_id": provider_result.response_id or None,
+                    "provider_request_id_supported": provider_result.provider_request_id_supported,
+                    "status": "response_received",
+                },
+            )
+            _atomic_write(
+                out_dir / "provider_response_metadata.json",
+                {
+                    "client_request_id": provider_result.client_request_id,
+                    "provider_request_id": provider_result.response_id or None,
+                    "provider_request_id_supported": provider_result.provider_request_id_supported,
+                    "provider": provider_result.provider,
+                    "model": provider_result.model,
+                    "finish_status": provider_result.finish_status,
+                    "request_duration_ms": provider_result.request_duration_ms,
+                },
+            )
 
             if not attempt1_validation.get("all_claims_validated") is True:
                 if (
@@ -381,9 +733,17 @@ def run(
                     else:
                         attempt2_report = repair_result.structured_output
                         dc_overridden = _inject_data_context(attempt2_report, contract)
+                        det_audit = _apply_deterministic_fixes(attempt2_report, contract)
                         attempt2_validation = validate_structured_report(
                             attempt2_report, ctx, expected_mode=expected_mode
                         )
+                        if str(attempt2_report.get("schema_version") or "") == "2.0":
+                            _enrich_v2_report(attempt2_report, contract)
+                        if det_audit["injected_disclosures"] or det_audit["source_mappings"]:
+                            attempt2_validation.setdefault("warnings", []).append(
+                                "Fix A: 程序确定性披露/来源映射已应用 "
+                                + json.dumps(det_audit, ensure_ascii=False)
+                            )
                         if dc_overridden:
                             attempt2_validation.setdefault("warnings", []).append(
                                 "data_context: 模型输出与输入合同不一致，已由程序覆盖为权威值"
@@ -421,10 +781,13 @@ def run(
         _atomic_write(out_dir / "structured_report_final.json", final_report)
         _atomic_write(out_dir / "llm_request_payload.json", payload)
         _atomic_write(out_dir / "report_output_schema.json", schema)
-        _atomic_write(
-            out_dir / "prompt_manifest.json",
-            build_prompt_manifest(provider, resolved_model, format_adapter_version=format_adapter_version),
+        prompt_manifest = build_prompt_manifest(
+            provider, resolved_model, format_adapter_version=format_adapter_version
         )
+        prompt_manifest["effective_system_prompt_hash"] = effective_system_prompt_hash
+        prompt_manifest["output_schema_business_hash"] = schema_hash
+        prompt_manifest["writer_prompt_actually_sent"] = provider == "deepseek"
+        _atomic_write(out_dir / "prompt_manifest.json", prompt_manifest)
 
         if final_report.get("report_status") != "rejected" and render_stats is not None:
             (out_dir / "report_draft.md").write_text(render_stats["markdown"], encoding="utf-8")
@@ -489,6 +852,18 @@ def run(
             "thinking_mode": thinking_mode,
             "server_side_strict_schema": provider == "openai",
             "local_strict_schema_validation": True,
+            "native_json_schema": provider == "openai",
+            "output_schema_serialized_to_request": provider in ("deepseek", "openai"),
+            "output_schema_business_hash": schema_hash,
+            "effective_system_prompt_hash": effective_system_prompt_hash,
+            "writer_prompt_actually_sent": provider == "deepseek",
+            "provider_request_audit": tokens.get("request_audit") or {},
+            "client_request_id": tokens.get("client_request_id") or client_request_id,
+            "response_id": tokens.get("response_id") or "",
+            "provider_request_id": tokens.get("response_id") or None,
+            "provider_request_id_supported": tokens.get(
+                "provider_request_id_supported", False
+            ),
             "input_business_hash": evidence_business_hash,
             "cache_key": cache_key,
             "generation_source": "cache" if cache_used else ("model" if provider != "mock" else "mock"),
@@ -577,13 +952,14 @@ def run(
                         and (previous_manifest or {}).get("validation_ready") is True
                     )
                 )
-                else "not_run"
+                else ("failed" if provider == "deepseek" else "not_run")
             ),
             cache_used=cache_used,
             business_equal=business_equal,
             final_validation=final_validation,
             provider_result=provider_result,
             formal_unchanged=formal_unchanged,
+            input_business_hash=evidence_business_hash,
             out_dir=out_dir,
             cost_estimation_status=cost["cost_estimation_status"],
             warnings=[cost.get("pricing_warning")] if cost.get("pricing_warning") else [],
@@ -639,6 +1015,7 @@ def _write_preflight(
     final_validation: dict,
     provider_result,
     formal_unchanged: dict,
+    input_business_hash: str,
     out_dir: Path | None,
     cost_estimation_status: str,
     warnings: list[str] | None = None,
@@ -651,6 +1028,32 @@ def _write_preflight(
     key_exposed, reasoning_persisted = (False, False)
     if out_dir is not None:
         key_exposed, reasoning_persisted = _scan_output_secrets(out_dir, key)
+    preflight_path = (
+        root
+        / "data"
+        / "reports"
+        / "tainan_2026"
+        / "deployment_validation"
+        / "deepseek_production_preflight.json"
+    )
+    previous = _load_json(preflight_path) if preflight_path.exists() else {}
+    pass_count = 0
+    response_ids: list[str] = []
+    response_id = getattr(provider_result, "response_id", "") if provider_result else ""
+    client_request_id = (
+        getattr(provider_result, "client_request_id", "") if provider_result else ""
+    )
+    audit_response_id = response_id or client_request_id
+    if provider == "deepseek" and live_status == "passed" and not cache_used and audit_response_id:
+        if previous.get("formal_live_input_business_hash") == input_business_hash:
+            response_ids = list(previous.get("formal_live_response_ids") or [])
+            pass_count = int(previous.get("formal_live_validation_pass_count") or 0)
+        if audit_response_id not in response_ids:
+            response_ids.append(audit_response_id)
+            pass_count += 1
+        response_ids = response_ids[-2:]
+        pass_count = min(pass_count, 2)
+
     preflight = build_preflight(
         schedule_days=list(schedule.get("run_days") or [9, 22]),
         period_definition="natural_half_month",
@@ -677,6 +1080,10 @@ def _write_preflight(
         reasoning_content_persisted=reasoning_persisted,
         formal_data_unchanged=formal_unchanged.get("formal_data_unchanged", False),
         evidence_package_unchanged=formal_unchanged.get("evidence_package_unchanged", False),
+        formal_live_validation_pass_count=pass_count,
+        required_formal_live_validation_passes=2,
+        formal_live_input_business_hash=input_business_hash,
+        formal_live_response_ids=response_ids,
         warnings=warnings or [],
     )
     write_preflight(root, preflight)
