@@ -51,6 +51,7 @@ from .quality_reports import (
     date_basis_stats,
     render_all_candidate_audit,
 )
+from .run_retention import enforce_run_retention
 from .source_resolver import resolve_sources
 from .formal_duplicate_diagnostics import build_formal_duplicate_diagnostics
 
@@ -207,6 +208,27 @@ def _write_run_log(config, record: dict[str, Any]) -> Path:
     return log_path
 
 
+def _apply_run_retention(config, args, current_run_dir: Path) -> dict[str, object] | None:
+    if args.output_root:
+        return None
+    try:
+        report = enforce_run_retention(
+            config.path("output_root") / "runs",
+            current_run_dir=current_run_dir,
+            enabled=bool(config.get("run_retention.enabled", False)),
+            keep_latest=int(config.get("run_retention.keep_latest", 12)),
+            max_total_mb=int(config.get("run_retention.max_total_mb", 40)),
+        )
+        payload = report.to_dict()
+    except Exception as exc:  # Retention must never fail a successful pipeline run.
+        payload = {
+            "enabled": bool(config.get("run_retention.enabled", False)),
+            "warnings": [f"retention_failed:{type(exc).__name__}"],
+        }
+    print("run_retention=" + json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return payload
+
+
 def run_pipeline(config, args) -> dict[str, Any]:
     election_id = config.resolve_election_id(args.election_id)
     run_id = f"run_{datetime.now(TAIPEI).strftime('%Y%m%d_%H%M%S_%f')}"
@@ -235,6 +257,7 @@ def run_pipeline(config, args) -> dict[str, Any]:
             config.path("output_root") / "runs" / latest["run_id"]
         )
         paths = render_run_outputs(repo, latest["run_id"], run_dir, config)
+        _apply_run_retention(config, args, run_dir)
         print(json.dumps(paths, ensure_ascii=False, indent=2))
         repo.close()
         return paths
@@ -845,6 +868,8 @@ def run_pipeline(config, args) -> dict[str, Any]:
         }
         idem_path = run_dir / config.get("outputs.run_idempotency", "run_idempotency.json")
         idem_path.write_text(json.dumps(idempotency, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        _apply_run_retention(config, args, run_dir)
 
         print(f"run_id={run_id}")
         print(f"articles_examined={examined}")

@@ -10,6 +10,11 @@ deployment:
   scheduler_mode: since-last-success
   log_path: data/election_candidates/tainan_2026/logs/candidate_pipeline.jsonl
 
+run_retention:
+  enabled: true
+  keep_latest: 12
+  max_total_mb: 40
+
 election:
   canonical_election_id: tainan_mayoral_2026
   election_id_aliases:

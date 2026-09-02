@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,14 @@ def _file_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _old_run(root: Path, name: str, mtime: int) -> Path:
+    path = root / name
+    path.mkdir(parents=True)
+    (path / "payload.jsonl").write_text(name, encoding="utf-8")
+    os.utime(path, (mtime, mtime))
+    return path
+
+
 def test_full_pipeline_build_and_outputs(tmp_path):
     config = _setup(tmp_path)
     news_before = _file_sha(config.path("news_db"))
@@ -82,6 +91,44 @@ def test_full_pipeline_build_and_outputs(tmp_path):
     assert _file_sha(config.path("news_db")) == news_before
     assert _file_sha(config.path("formal_db")) == formal_before
     assert _file_sha(config.path("match_db")) == match_before
+
+
+def test_default_output_enforces_run_retention(tmp_path):
+    config = _setup(tmp_path)
+    config.raw["run_retention"] = {
+        "enabled": True,
+        "keep_latest": 2,
+        "max_total_mb": 40,
+    }
+    runs_root = config.path("output_root") / "runs"
+    oldest = _old_run(runs_root, "run_001", 1)
+    middle = _old_run(runs_root, "run_002", 2)
+    newest = _old_run(runs_root, "run_003", 3)
+
+    manifest = run_pipeline(config, _args())
+
+    current = Path(manifest["output_paths"]["review_queue"]).parent
+    remaining = {path.name for path in runs_root.iterdir() if path.is_dir()}
+    assert remaining == {newest.name, current.name}
+    assert not oldest.exists()
+    assert not middle.exists()
+
+
+def test_explicit_output_root_does_not_prune_configured_runs(tmp_path):
+    config = _setup(tmp_path)
+    config.raw["run_retention"] = {
+        "enabled": True,
+        "keep_latest": 1,
+        "max_total_mb": 1,
+    }
+    runs_root = config.path("output_root") / "runs"
+    first = _old_run(runs_root, "run_001", 1)
+    second = _old_run(runs_root, "run_002", 2)
+
+    run_pipeline(config, _args(output_root=str(tmp_path / "manual")))
+
+    assert first.exists()
+    assert second.exists()
 
 
 def test_two_runs_business_idempotent(tmp_path):
