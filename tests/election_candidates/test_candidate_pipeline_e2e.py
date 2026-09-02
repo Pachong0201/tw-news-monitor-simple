@@ -44,6 +44,9 @@ def _setup(tmp_path):
     create_formal_db(tmp_path / "election_context.db")
     (tmp_path / "release.zip").write_bytes(b"frozen-release")
     config = make_config(tmp_path)
+    # These cursor tests use a fixed July 2026 fixture independent of the
+    # host calendar date; keep the production 45-day default unchanged.
+    config.raw["scan"]["initial_scan_days"] = 365
     return config
 
 

@@ -35,6 +35,7 @@ DEFAULT_BATCH_SIZE = 40
 DEFAULT_CONTENT_CHARS = 800
 DEFAULT_RETRY_HOURS = 6
 SENTENCE_ENDINGS = frozenset("。！？!?")
+TRAILING_CUTOFF_RE = re.compile(r"(?:\s*(?:\.{2,}|…+|⋯+|︙+)\s*)+$")
 META_TIMEOUT = 15.0
 META_MAX_WORKERS = 5
 META_USER_AGENT = (
@@ -82,11 +83,56 @@ def truncate_to_complete_sentence(text: str, max_length: int = DEFAULT_MAX_LENGT
     return text
 
 
+def _sentence_end_positions(text: str):
+    """Yield positions that can safely terminate a sentence."""
+    for index, char in enumerate(text):
+        if char in SENTENCE_ENDINGS:
+            yield index
+            continue
+        if char not in ".．":
+            continue
+        next_char = text[index + 1 : index + 2]
+        if not next_char or next_char.isspace() or next_char in "」』）》)\"'”’":
+            yield index
+
+
+def _strip_trailing_cutoff_marker(text: str) -> tuple[str, bool]:
+    """Remove a feed/model hard-cut marker and report whether one was found."""
+    match = TRAILING_CUTOFF_RE.search(text)
+    if not match:
+        return text, False
+    return text[: match.start()].rstrip(), True
+
+
+def clean_summary_text(text: str | None, max_length: int | None = None) -> str | None:
+    """Return a safe summary without a demonstrably incomplete tail.
+
+    Feed teasers and model responses sometimes end with a visible hard-cut
+    marker.  When that marker is present, only text through the last complete
+    sentence is retained.  If the whole value is a cut fragment, return None
+    instead of presenting an incomplete sentence or inventing missing facts.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    normalized = re.sub(r"\s+", " ", text).strip()
+    normalized, was_cut = _strip_trailing_cutoff_marker(normalized)
+    if was_cut:
+        endings = list(_sentence_end_positions(normalized))
+        if not endings:
+            return None
+        normalized = normalized[: endings[-1] + 1].rstrip()
+    if not normalized:
+        return None
+    if max_length is not None:
+        normalized = truncate_to_complete_sentence(normalized, max_length)
+    return normalized or None
+
+
 def summary_needs_rewrite(article: Article, max_length: int = DEFAULT_MAX_LENGTH) -> bool:
-    """Return whether an existing summary has the old visible hard-cut marker."""
+    """Return whether an existing summary has a visible hard-cut marker."""
     summary = (getattr(article, "summary", None) or "").strip()
     del max_length
-    return bool(summary) and summary.endswith("…")
+    return bool(summary) and bool(TRAILING_CUTOFF_RE.search(summary))
 
 
 def _env_truthy(name: str) -> bool:
@@ -122,7 +168,9 @@ def translate_metadata(
     if not isinstance(cn_title, str) or not isinstance(cn_summary, str):
         raise ValueError("international metadata translation returned invalid fields")
     cn_title = cn_title.strip()
-    cn_summary = truncate_to_complete_sentence(cn_summary, _int_env("SUMMARIZER_MAX_LENGTH", DEFAULT_MAX_LENGTH))
+    cn_summary = clean_summary_text(
+        cn_summary, _int_env("SUMMARIZER_MAX_LENGTH", DEFAULT_MAX_LENGTH)
+    )
     if not cn_title or not cn_summary:
         raise ValueError("international metadata translation returned empty fields")
     return cn_title, cn_summary
@@ -138,7 +186,7 @@ def clean_rss_summary(text: str, max_length: int = DEFAULT_MAX_LENGTH) -> str | 
     plain = _strip_leading_captions(plain)
     if not plain:
         return None
-    return truncate_to_complete_sentence(plain, max_length)
+    return clean_summary_text(plain, max_length=max_length)
 
 
 def _strip_leading_captions(text: str) -> str:
@@ -254,8 +302,9 @@ def parse_summaries_response(
         text = re.sub(r"\s+", " ", text).strip()
         if len(text) < 5:
             continue
-        text = truncate_to_complete_sentence(text, max_length)
-        result[url] = text
+        text = clean_summary_text(text, max_length=max_length)
+        if text:
+            result[url] = text
     return result
 
 
@@ -425,7 +474,7 @@ def fetch_meta_descriptions(
             }
             for future in as_completed(futures):
                 url = futures[future]
-                summary = future.result()
+                summary = clean_summary_text(future.result())
                 if summary:
                     results[url] = summary
     logger.info("Meta summaries fetched: %d/%d", len(results), len(urls))
@@ -465,14 +514,15 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
             return not a.summary or summary_needs_rewrite(a)
 
         def _eligible(a: Article) -> bool:
-            # A trailing ellipsis is a known old hard-cut bug and should be
+            # A trailing cutoff marker is a known hard-cut bug and should be
             # repaired immediately on the next export instead of waiting for
             # the normal negative-cache window.
-            return bool((a.summary or "").strip().endswith("…")) or _retryable(a)
+            return summary_needs_rewrite(a) or _retryable(a)
 
         pending = [a for a in articles if _needs_summary(a) and _eligible(a)]
         if not pending:
             return articles
+        rewrite_pending = {a.url for a in pending if summary_needs_rewrite(a)}
 
         page_fetch_pending = [a for a in pending if a.access_level is None]
 
@@ -486,6 +536,8 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
         if mode in ("llm", "hybrid"):
             llm_summaries.update(summarize_with_deepseek(pending, contents=contents))
 
+        llm_summaries = _clean_summary_map(llm_summaries)
+
         remaining = [
             a for a in page_fetch_pending if a.url not in llm_summaries
         ]
@@ -493,6 +545,9 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
             mode == "meta" or (mode == "hybrid" and not deepseek_available())
         ):
             meta_summaries.update(fetch_meta_descriptions(remaining))
+        meta_summaries = _clean_summary_map(meta_summaries)
+
+        fallback_updates: dict[str, dict[str, str]] = {}
 
         for article in articles:
             if article not in pending:
@@ -505,6 +560,19 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
                 article.summary = meta_summaries[article.url]
                 article.summary_source = "meta"
                 article.summary_attempted_at = now
+            elif article.url in rewrite_pending:
+                fallback = clean_summary_text(article.summary)
+                fallback_source = article.summary_source or "fallback"
+                if fallback is None and article.title:
+                    fallback = f"标题指出：{article.title.strip().rstrip('。！？!?…')}。"
+                    fallback_source = "fallback"
+                if fallback:
+                    article.summary = fallback
+                    article.summary_source = fallback_source
+                    article.summary_attempted_at = now
+                    fallback_updates.setdefault(fallback_source, {})[
+                        article.url
+                    ] = fallback
 
         if db is not None:
             try:
@@ -515,6 +583,10 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
                 if meta_summaries:
                     db.update_article_summaries(
                         meta_summaries, source="meta", attempted_at=now
+                    )
+                for source, summaries in fallback_updates.items():
+                    db.update_article_summaries(
+                        summaries, source=source, attempted_at=now
                     )
                 if mode == "hybrid":
                     failed = [
@@ -537,3 +609,13 @@ def enrich_articles_with_summaries(articles: list[Article], db=None) -> list[Art
     except Exception as exc:
         logger.warning("Summary enrichment failed: %s", exc)
     return articles
+
+
+def _clean_summary_map(summaries: dict[str, str]) -> dict[str, str]:
+    """Normalize provider output before it can be assigned or persisted."""
+    cleaned: dict[str, str] = {}
+    for url, summary in summaries.items():
+        value = clean_summary_text(summary)
+        if value:
+            cleaned[url] = value
+    return cleaned

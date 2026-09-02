@@ -136,6 +136,17 @@ class TestWordDigest:
             texts = [p.text for p in doc.paragraphs]
             assert any("本简报由自动新闻监测程序生成" in t for t in texts)
 
+    def test_summary_does_not_render_feed_cutoff_fragment(self):
+        """Historical hard-cut summaries are cleaned at the Word boundary."""
+        article = make_article()
+        article.summary = "第一句完整。第二句被來源截斷..."
+        articles = [article]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = build_word_digest(articles, Path(tmp))
+            texts = [p.text for p in Document(str(output)).paragraphs]
+            assert "梗概：第一句完整。" in texts
+            assert not any("截斷..." in text for text in texts)
+
     def test_count_meta(self):
         """Meta line shows correct article count."""
         articles = [make_article() for _ in range(5)]

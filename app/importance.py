@@ -171,14 +171,50 @@ def _category_bonus(category: str, scoring: dict) -> int:
     return 0
 
 
+def _international_highlight_eligible(
+    title: str,
+    description: str,
+    source_name: str,
+    category: str,
+    international_config: dict | None,
+) -> bool:
+    """Return whether an international article may enter highlight slots.
+
+    International articles remain in the digest regardless of this decision.
+    The gate is deliberately opt-in so existing callers that do not provide
+    the international configuration retain their historical behavior.
+    """
+    if str(category or "").strip().lower() != "international":
+        return True
+    if not isinstance(international_config, dict):
+        return True
+    if not international_config.get("enabled", False):
+        return True
+
+    # Keep the relevance model centralized in international.py and avoid a
+    # second, importance-specific set of Taiwan/China relationship rules.
+    from .international import evaluate_relevance
+
+    return evaluate_relevance(
+        title, description, source_name, international_config
+    ).relevant
+
+
 def score_article(
     title: str,
     source_name: str,
     category: str,
     description: str,
     rules_config: dict,
+    international_config: dict | None = None,
 ) -> ImportanceResult:
-    """Score a single article based on configured v2 rules."""
+    """Score a single article based on configured v2 rules.
+
+    When the optional international configuration is supplied, a generic
+    foreign/domestic story can still be delivered in the international digest
+    but cannot become a highlight without a configured Taiwan/China/
+    Indo-Pacific relationship.
+    """
 
     if not rules_config.get("enabled", True):
         return ImportanceResult()
@@ -249,6 +285,18 @@ def score_article(
         r["score"] = max(0, min(100, r["score"]))
         r["level"] = _level_for_score(r["score"], thresholds, r["level_cap"])
 
+    if not _international_highlight_eligible(
+        title,
+        description,
+        source_name,
+        category,
+        international_config,
+    ):
+        for r in matched_results:
+            if r["level"] in ("critical", "important"):
+                r["level"] = "normal"
+                r["reasons"].append("国际关联性不足")
+
     best = max(
         matched_results,
         key=lambda r: (LEVEL_ORDER[r["level"]], r["score"]),
@@ -271,8 +319,13 @@ def classify_articles(
     source_attr: str = "source_name",
     category_attr: str = "category",
     desc_attr: str = "description",
+    international_config: dict | None = None,
 ) -> list:
-    """Classify a list of articles and return (article, result) pairs."""
+    """Classify articles and return (article, result) pairs.
+
+    ``international_config`` is optional for compatibility with standalone
+    callers and older tests.
+    """
     results = []
     for article in articles:
         title = getattr(article, title_attr, "")
@@ -280,7 +333,14 @@ def classify_articles(
         category = getattr(article, category_attr, "")
         desc = getattr(article, desc_attr, "")
 
-        result = score_article(title, source, category, desc, rules_config)
+        result = score_article(
+            title,
+            source,
+            category,
+            desc,
+            rules_config,
+            international_config=international_config,
+        )
         results.append((article, result))
     return results
 
@@ -306,6 +366,10 @@ def finalize_importance(
     lanes = rules_config.get("lanes", {}) or {}
     election_lane = lanes.get("election", {}) or {}
     min_slots = int(election_lane.get("min_slots", 1) or 0)
+    taiwan_domestic_lane = lanes.get("taiwan_domestic", {}) or {}
+    taiwan_domestic_min = int(
+        taiwan_domestic_lane.get("min_slots", 0) or 0
+    )
 
     candidates = []
     for idx, (article, result) in enumerate(importance_results):
@@ -328,6 +392,25 @@ def finalize_importance(
     # Election lane guarantee
     election_picks = [c for c in ordered if c[2].track == "election"][:min_slots]
     for c in election_picks:
+        selected.append(c)
+        selected_idx.add(c[0])
+
+    def _is_taiwan_domestic(item: tuple) -> bool:
+        _idx, article, result = item
+        category = str(getattr(article, "category", "") or "").strip().lower()
+        return result.track == "election" or category != "international"
+
+    # Reserve one shared Taiwan/domestic lane. Election picks count toward it,
+    # so the two guarantees do not stack into four mandatory slots.
+    domestic_already_selected = sum(
+        1 for c in selected if _is_taiwan_domestic(c)
+    )
+    domestic_picks = [
+        c
+        for c in ordered
+        if c[0] not in selected_idx and _is_taiwan_domestic(c)
+    ][: max(0, taiwan_domestic_min - domestic_already_selected)]
+    for c in domestic_picks:
         selected.append(c)
         selected_idx.add(c[0])
 
@@ -405,7 +488,8 @@ def validate_rules_config(config: dict) -> list[str]:
             errors.append("display.max_highlights must be an integer >= 1")
 
     total_cap = config.get("total_cap", 5)
-    if not isinstance(total_cap, int) or total_cap < 1:
+    valid_total_cap = isinstance(total_cap, int) and total_cap >= 1
+    if not valid_total_cap:
         errors.append("total_cap must be an integer >= 1")
 
     lanes = config.get("lanes", {})
@@ -420,6 +504,36 @@ def validate_rules_config(config: dict) -> list[str]:
         min_slots = election_lane.get("min_slots")
         if not isinstance(min_slots, int) or min_slots < 0:
             errors.append("lanes.election.min_slots must be an integer >= 0")
+
+    taiwan_domestic_lane = lanes.get("taiwan_domestic", {})
+    taiwan_domestic_min = None
+    if not isinstance(taiwan_domestic_lane, dict):
+        errors.append("lanes.taiwan_domestic must be a mapping")
+    elif taiwan_domestic_lane:
+        taiwan_domestic_min = taiwan_domestic_lane.get("min_slots")
+        if (
+            not isinstance(taiwan_domestic_min, int)
+            or taiwan_domestic_min < 0
+        ):
+            errors.append(
+                "lanes.taiwan_domestic.min_slots must be an integer >= 0"
+            )
+        elif valid_total_cap and taiwan_domestic_min > total_cap:
+            errors.append(
+                "lanes.taiwan_domestic.min_slots must not exceed total_cap"
+            )
+
+    election_min = election_lane.get("min_slots") if election_lane else None
+    if (
+        taiwan_domestic_min is not None
+        and isinstance(taiwan_domestic_min, int)
+        and isinstance(election_min, int)
+        and election_min > taiwan_domestic_min
+    ):
+        errors.append(
+            "lanes.election.min_slots must not exceed "
+            "lanes.taiwan_domestic.min_slots"
+        )
 
     scoring = config.get("scoring", {})
     if not isinstance(scoring, dict):

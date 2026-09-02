@@ -1085,7 +1085,11 @@ def main() -> None:
             )
             enrich_summaries_safe(digest_articles, db)
             importance_results = finalize_importance(
-                classify_articles(digest_articles, importance_rules_config),
+                classify_articles(
+                    digest_articles,
+                    importance_rules_config,
+                    international_config=international_config,
+                ),
                 importance_rules_config,
             )
             translator = _build_international_translator()
@@ -1492,7 +1496,9 @@ def main() -> None:
 
         # Importance classification
         importance_results = classify_articles(
-            digest_articles, importance_rules_config
+            digest_articles,
+            importance_rules_config,
+            international_config=international_config,
         )
         pre_cap_summary = importance_summary(importance_results)
         importance_results = finalize_importance(

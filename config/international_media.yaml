@@ -54,6 +54,37 @@ relevance_keywords:
     - Taiwan government
     - Taiwan military
     - Taiwan election
+    - 台灣
+    - 台湾
+    - 臺灣
+    - 台北
+    - 臺北
+    - 台海
+    - 兩岸
+    - 两岸
+    - 台美
+    - 台日
+    - 台澳
+    - 台灣政府
+    - 台湾政府
+    - 台灣軍方
+    - 台湾军方
+    - 台灣選舉
+    - 台湾选举
+    - 台積電
+    - 台积电
+    - 賴清德
+    - 赖清德
+    - 民進黨
+    - 民进党
+    - 國民黨
+    - 国民党
+    - 解放軍
+    - 解放军
+    - 共軍
+    - 共军
+    - 國台辦
+    - 国台办
   # (b) 中国/两岸/涉华：仅当同时命中 china_relevant_cross 才 relevant；
   #     单纯 China 经济/社会新闻 -> relevant=False
   china_related:
@@ -67,6 +98,20 @@ relevance_keywords:
     - People's Liberation Army
     - State Council
     - Taiwan Affairs Office
+    - 中國
+    - 中国
+    - 中共
+    - 北京
+    - 習近平
+    - 习近平
+    - 大陸
+    - 大陆
+    - 國台辦
+    - 国台办
+    - 解放軍
+    - 解放军
+    - 國務院
+    - 国务院
   # (c) 美国与国际局势：仅当同时命中 taiwan_direct 或 china_related
   #     才 relevant（tier=us_international）
   us_international:
@@ -87,6 +132,36 @@ relevance_keywords:
     - sanctions
     - trade
     - tariffs
+    - 美國
+    - 美国
+    - 華盛頓
+    - 华盛顿
+    - 五角大廈
+    - 五角大厦
+    - 國務院
+    - 国务院
+    - 國會
+    - 国会
+    - 印太
+    - 南海
+    - 東海
+    - 东海
+    - 菲律賓
+    - 菲律宾
+    - 半導體
+    - 半导体
+    - 晶片
+    - 芯片
+    - 軍售
+    - 军售
+    - 軍事演習
+    - 军事演习
+    - 制裁
+    - 貿易
+    - 贸易
+    - 關稅
+    - 关税
+    - 出口管制
   # (d) 中美关系：两组实体必须同时出现；避免把单纯中国内政或美国新闻扩大纳入。
   china_us_china_entities:
     - China
@@ -94,6 +169,12 @@ relevance_keywords:
     - Beijing
     - Xi Jinping
     - CCP
+    - 中國
+    - 中国
+    - 中共
+    - 北京
+    - 習近平
+    - 习近平
   china_us_us_entities:
     - United States
     - US
@@ -104,6 +185,18 @@ relevance_keywords:
     - State Department
     - Pentagon
     - Congress
+    - 美國
+    - 美国
+    - 華盛頓
+    - 华盛顿
+    - 白宮
+    - 白宫
+    - 國務院
+    - 国务院
+    - 國會
+    - 国会
+    - 五角大廈
+    - 五角大厦
   # 规则 (b) 的辅助交叉词：涉台/军事/外交/半导体（含单复数形式）
   china_relevant_cross:
     - Taiwan
@@ -130,6 +223,38 @@ relevance_keywords:
     - East China Sea
     - PLA
     - Taiwan Affairs Office
+    - 台灣
+    - 台湾
+    - 臺灣
+    - 台海
+    - 台灣海峽
+    - 台湾海峡
+    - 兩岸
+    - 两岸
+    - 軍事
+    - 军事
+    - 軍售
+    - 军售
+    - 軍演
+    - 军演
+    - 演習
+    - 演习
+    - 國防
+    - 国防
+    - 外交
+    - 區域安全
+    - 区域安全
+    - 印太
+    - 制裁
+    - 貿易
+    - 贸易
+    - 關稅
+    - 关税
+    - 半導體
+    - 半导体
+    - 晶片
+    - 芯片
+    - 出口管制
 
 # 跨媒体事件去重（显示层，不写库）：仅对国际媒体文章聚类。聚类方式为
 # “时间窗内相似度图”的传递闭包（连通分量）：两篇之间构成合并边当且仅当

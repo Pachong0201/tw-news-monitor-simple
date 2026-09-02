@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RULES_PATH = PROJECT_ROOT / "config" / "importance_rules.yaml"
+INTERNATIONAL_CONFIG_PATH = PROJECT_ROOT / "config" / "international_media.yaml"
 
 SAMPLE_RULES = {
     "enabled": True,
@@ -153,6 +154,41 @@ class TestScoring:
         assert r.level == "normal"
         assert r.score == 0
 
+    def test_generic_us_domestic_international_story_cannot_be_highlight(self):
+        from app.international import load_international_config
+        from app.importance import score_article
+
+        international_config = load_international_config(INTERNATIONAL_CONFIG_PATH)
+        result = score_article(
+            "美国总统宣布国内移民政策",
+            "Reuters",
+            "international",
+            "",
+            SAMPLE_RULES,
+            international_config=international_config,
+        )
+
+        assert result.score > 0
+        assert result.level == "normal"
+        assert "国际关联性不足" in result.reasons
+
+    def test_taiwan_related_international_story_can_be_highlight(self):
+        from app.international import load_international_config
+        from app.importance import load_rules, score_article
+
+        rules = load_rules(RULES_PATH)
+        international_config = load_international_config(INTERNATIONAL_CONFIG_PATH)
+        result = score_article(
+            "美國宣布對台灣軍售",
+            "Reuters",
+            "international",
+            "",
+            rules,
+            international_config=international_config,
+        )
+
+        assert result.level in ("critical", "important")
+
 
 class TestBoostAndBonus:
     def test_boost_raises_score(self):
@@ -275,6 +311,60 @@ class TestFinalizeCap:
         assert out is results
         assert results[0][1].level == "normal"
 
+    def test_taiwan_domestic_lane_reserves_three_shared_with_election(self):
+        from app.importance import finalize_importance
+
+        rules = _deep_copy(SAMPLE_RULES)
+        rules["lanes"]["taiwan_domestic"] = {"min_slots": 3}
+        specs = [
+            ("選情", 80, "important", "election", "politics"),
+            ("台灣政治", 79, "important", "politics_security", "politics"),
+            ("台灣經濟", 78, "important", "politics_security", "economy"),
+            ("美國內政一", 99, "critical", "politics_security", "international"),
+            ("美國內政二", 98, "critical", "politics_security", "international"),
+            ("美國內政三", 97, "critical", "politics_security", "international"),
+        ]
+        results = [
+            (_article(title, category=category), _result(score, level, track))
+            for title, score, level, track, category in specs
+        ]
+
+        finalize_importance(results, rules)
+
+        kept = [(article, result) for article, result in results if result.level in ("critical", "important")]
+        domestic = [
+            result
+            for article, result in kept
+            if result.track == "election" or article.category != "international"
+        ]
+        assert len(kept) == 5
+        assert len(domestic) >= 3
+        assert any(result.track == "election" for result in domestic)
+
+    def test_taiwan_domestic_lane_allows_international_fill_when_short(self):
+        from app.importance import finalize_importance
+
+        rules = _deep_copy(SAMPLE_RULES)
+        rules["lanes"]["taiwan_domestic"] = {"min_slots": 3}
+        specs = [
+            ("唯一本地新闻", 70, "important", "politics_security", "politics"),
+            ("国际新闻一", 99, "critical", "politics_security", "international"),
+            ("国际新闻二", 98, "critical", "politics_security", "international"),
+            ("国际新闻三", 97, "critical", "politics_security", "international"),
+            ("国际新闻四", 96, "critical", "politics_security", "international"),
+            ("国际新闻五", 95, "critical", "politics_security", "international"),
+        ]
+        results = [
+            (_article(title, category=category), _result(score, level, track))
+            for title, score, level, track, category in specs
+        ]
+
+        finalize_importance(results, rules)
+
+        kept = [(article, result) for article, result in results if result.level in ("critical", "important")]
+        assert len(kept) == 5
+        assert sum(article.category != "international" for article, _result in kept) == 1
+
 
 class TestRealConfigCalibration:
     def test_config_valid_and_calibration_cases(self):
@@ -344,6 +434,19 @@ class TestConfigValidation:
         cfg = _deep_copy(SAMPLE_RULES)
         cfg["total_cap"] = 0
         assert len(validate_rules_config(cfg)) > 0
+
+    def test_validate_taiwan_domestic_lane_limits(self):
+        from app.importance import validate_rules_config
+
+        cfg = _deep_copy(SAMPLE_RULES)
+        cfg["lanes"]["taiwan_domestic"] = {"min_slots": 6}
+        errors = validate_rules_config(cfg)
+        assert any("taiwan_domestic.min_slots" in error for error in errors)
+
+        cfg["lanes"]["taiwan_domestic"] = {"min_slots": 2}
+        cfg["lanes"]["election"]["min_slots"] = 3
+        errors = validate_rules_config(cfg)
+        assert any("election.min_slots" in error for error in errors)
 
 
 class TestImportanceSummary:

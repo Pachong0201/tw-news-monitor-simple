@@ -64,9 +64,21 @@ class TestRssTeaser:
         text = "第一句完整。第二句很长" + "字" * 200
         assert summarizer.clean_rss_summary(text, max_length=20) == "第一句完整。"
 
+    def test_clean_rss_summary_removes_feed_cutoff_after_complete_sentence(self):
+        text = "第一句完整。第二句被來源截斷...…"
+        assert summarizer.clean_rss_summary(text) == "第一句完整。"
+
+    def test_clean_rss_summary_discards_cutoff_when_no_complete_sentence_exists(self):
+        text = "只有被來源截斷的半句話..."
+        assert summarizer.clean_rss_summary(text) is None
+
     def test_complete_overlength_summary_does_not_need_rewrite(self):
         article = make_article(summary="完整句子。" + "字" * 200)
         assert summarizer.summary_needs_rewrite(article) is False
+
+    def test_summary_needs_rewrite_detects_ascii_cutoff_marker(self):
+        article = make_article(summary="完整句子。後半段被截斷...")
+        assert summarizer.summary_needs_rewrite(article) is True
 
     def test_clean_rss_summary_empty(self):
         assert summarizer.clean_rss_summary("") is None
@@ -161,6 +173,20 @@ class TestParseResponse:
             {"https://example.com/1": text}, requested, max_length=20
         )
         assert result["https://example.com/1"] == "完整第一句。"
+
+    def test_parse_summaries_response_removes_model_cutoff_marker(self):
+        requested = {"https://example.com/1"}
+        result = summarizer.parse_summaries_response(
+            {"https://example.com/1": "完整第一句。後半段被模型截斷..."}, requested
+        )
+        assert result == {"https://example.com/1": "完整第一句。"}
+
+    def test_parse_summaries_response_rejects_only_cutoff_fragment(self):
+        requested = {"https://example.com/1"}
+        result = summarizer.parse_summaries_response(
+            {"https://example.com/1": "只有半句被模型截斷..."}, requested
+        )
+        assert result == {}
 
 
 class TestInternationalMetadataTranslation:
@@ -376,6 +402,40 @@ class TestEnrich:
         result = summarizer.enrich_articles_with_summaries(articles, None)
         assert result is articles
         assert articles[0].summary is None
+
+    def test_enrich_repairs_truncated_existing_summary_when_llm_fails(self, monkeypatch):
+        monkeypatch.setenv("SUMMARIZER_MODE", "llm")
+        monkeypatch.setattr(summarizer, "summarize_with_deepseek", lambda *args, **kw: {})
+        fake_db = FakeDB()
+        articles = [
+            make_article(
+                summary="第一句完整。第二句被遠端摘要截斷...",
+                summary_source="rss",
+            )
+        ]
+
+        summarizer.enrich_articles_with_summaries(articles, fake_db)
+
+        assert articles[0].summary == "第一句完整。"
+        assert articles[0].summary_source == "rss"
+        assert ("update", "rss", {articles[0].url: "第一句完整。"}) in fake_db.calls
+
+    def test_enrich_uses_title_fallback_for_only_cutoff_fragment(self, monkeypatch):
+        monkeypatch.setenv("SUMMARIZER_MODE", "llm")
+        monkeypatch.setattr(summarizer, "summarize_with_deepseek", lambda *args, **kw: {})
+        fake_db = FakeDB()
+        articles = [
+            make_article(
+                title="測試新聞標題",
+                summary="只有半句被遠端摘要截斷...",
+                summary_source="rss",
+            )
+        ]
+
+        summarizer.enrich_articles_with_summaries(articles, fake_db)
+
+        assert articles[0].summary == "标题指出：測試新聞標題。"
+        assert articles[0].summary_source == "fallback"
 
     def test_enrich_meta_failure_never_raises(self, monkeypatch):
         monkeypatch.setenv("SUMMARIZER_MODE", "meta")

@@ -1,19 +1,39 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 import pytest
 
+import validation.international_media.build_sha256_manifest as manifest_module
 from validation.international_media.build_sha256_manifest import (
     _matches_exclude,
     build_manifest,
 )
 
 
-def test_manifest_includes_builder_and_excludes_only_generated_json(tmp_path):
-    root = tmp_path / "root"
+@pytest.fixture
+def gitless_project_root(tmp_path, monkeypatch):
+    """Run Wave0 probes in an explicit workspace without repository metadata."""
+
+    monkeypatch.setattr(manifest_module, "PROJECT_ROOT", tmp_path)
+    return tmp_path
+
+
+def _prepare_project_roots(root: Path) -> None:
+    for name in ("app", "config", "tests", "docs", "prompts"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    target = root / "validation" / "international_media" / "build_sha256_manifest.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(manifest_module.__file__), target)
+
+
+def test_manifest_includes_builder_and_excludes_only_generated_json(gitless_project_root):
+    root = gitless_project_root / "root"
     root.mkdir()
     (root / "keep_sha256_manifest_tool.py").write_bytes(b"source")
     (root / "sha256_manifest_generated.json").write_bytes(b"generated")
-    output = tmp_path / "handoff.json"
+    output = gitless_project_root / "handoff.json"
 
     result = build_manifest([root], ["**/sha256_manifest*.json"], output)
     paths = {item["path"] for item in result["files"]}
@@ -23,8 +43,8 @@ def test_manifest_includes_builder_and_excludes_only_generated_json(tmp_path):
     assert result["git_state"] == "absent"
 
 
-def test_manifest_excludes_runtime_caches_but_keeps_source_builder(tmp_path):
-    root = tmp_path / "root"
+def test_manifest_excludes_runtime_caches_but_keeps_source_builder(gitless_project_root):
+    root = gitless_project_root / "root"
     (root / "nested" / "__pycache__").mkdir(parents=True)
     (root / "nested" / ".pytest_cache").mkdir(parents=True)
     (root / "nested" / "__pycache__" / "cached.py").write_bytes(b"cache")
@@ -33,7 +53,7 @@ def test_manifest_excludes_runtime_caches_but_keeps_source_builder(tmp_path):
     (root / "nested" / "build_sha256_manifest.py").write_bytes(b"source")
     (root / "nested" / "keep.py").write_bytes(b"source")
 
-    result = build_manifest([root], ["**/sha256_manifest*.json"], tmp_path / "out.json")
+    result = build_manifest([root], ["**/sha256_manifest*.json"], gitless_project_root / "out.json")
     paths = {item["path"] for item in result["files"]}
 
     assert any(path.endswith("build_sha256_manifest.py") for path in paths)
@@ -58,11 +78,12 @@ def test_manifest_exclusion_matches_windows_separators():
     )
 
 
-def test_manifest_includes_prompts_and_validation_roots(tmp_path):
+def test_manifest_includes_prompts_and_validation_roots(gitless_project_root):
+    _prepare_project_roots(gitless_project_root)
     result = build_manifest(
         ["app", "config", "tests", "docs", "prompts", "validation/international_media"],
         ["**/sha256_manifest*.json"],
-        tmp_path / "test_manifest_probe.json",
+        gitless_project_root / "test_manifest_probe.json",
     )
 
     assert "prompts" in result["included_roots"]
@@ -74,8 +95,8 @@ def test_manifest_includes_prompts_and_validation_roots(tmp_path):
     assert result["files"] == sorted(result["files"], key=lambda item: item["path"])
 
 
-def test_manifest_records_missing_roots_and_refuses_overwrite(tmp_path):
-    output = tmp_path / "manifest.json"
+def test_manifest_records_missing_roots_and_refuses_overwrite(gitless_project_root):
+    output = gitless_project_root / "manifest.json"
     result = build_manifest(["missing-root-for-wave0"], [], output)
 
     assert result["missing_roots"] == ["missing-root-for-wave0"]
@@ -84,29 +105,29 @@ def test_manifest_records_missing_roots_and_refuses_overwrite(tmp_path):
         build_manifest([], [], output)
 
 
-def test_manifest_hashes_file_with_stable_size_and_sha256(tmp_path):
-    source = tmp_path / "sample.txt"
+def test_manifest_hashes_file_with_stable_size_and_sha256(gitless_project_root):
+    source = gitless_project_root / "sample.txt"
     source.write_bytes(b"wave0\n")
-    result = build_manifest([source], [], tmp_path / "manifest.json")
+    result = build_manifest([source], [], gitless_project_root / "manifest.json")
 
     item = result["files"][0]
     assert item["size"] == 6
     assert len(item["sha256"]) == 64
 
 
-def test_manifest_is_deterministic_across_repeated_outputs(tmp_path):
-    root = tmp_path / "root"
+def test_manifest_is_deterministic_across_repeated_outputs(gitless_project_root):
+    root = gitless_project_root / "root"
     root.mkdir()
     (root / "keep.txt").write_bytes(b"stable")
 
-    first = build_manifest([root], ["**/sha256_manifest*.json"], tmp_path / "one.json")
-    second = build_manifest([root], ["**/sha256_manifest*.json"], tmp_path / "two.json")
+    first = build_manifest([root], ["**/sha256_manifest*.json"], gitless_project_root / "one.json")
+    second = build_manifest([root], ["**/sha256_manifest*.json"], gitless_project_root / "two.json")
 
     assert first == second
 
 
-def test_manifest_excludes_same_output_inside_include_root_on_repeat(tmp_path):
-    root = tmp_path / "root"
+def test_manifest_excludes_same_output_inside_include_root_on_repeat(gitless_project_root):
+    root = gitless_project_root / "root"
     root.mkdir()
     (root / "input.txt").write_bytes(b"stable")
     output = root / "ordinary_output.json"
@@ -123,9 +144,9 @@ def test_manifest_excludes_same_output_inside_include_root_on_repeat(tmp_path):
 
 
 def test_manifest_different_outputs_exclude_their_own_path_but_keep_json_inputs(
-    tmp_path,
+    gitless_project_root,
 ):
-    root = tmp_path / "root"
+    root = gitless_project_root / "root"
     root.mkdir()
     (root / "ordinary_input.json").write_bytes(b"input")
     first_output = root / "first_output.json"

@@ -16,6 +16,7 @@ from .models import Article
 from .source_registry import is_official_source, get_source_info, get_official_sources
 from .international import display_name, is_international_media
 from .international_translation import TranslationResult, translate_article
+from .summarizer import clean_summary_text
 from .time_utils import TAIPEI
 
 CATEGORY_NAMES = {
@@ -152,9 +153,10 @@ def build_word_digest(
                 run.bold = True
                 run.font.size = Pt(12)
 
-                if article.summary:
+                summary = clean_summary_text(article.summary)
+                if summary:
                     p = doc.add_paragraph()
-                    run = p.add_run(f"梗概：{article.summary}")
+                    run = p.add_run(f"梗概：{summary}")
                     run.font.size = Pt(10)
                     run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
                     run.italic = True
@@ -221,9 +223,10 @@ def build_word_digest(
                 run.bold = True
                 run.font.size = Pt(12)
 
-                if article.summary:
+                summary = clean_summary_text(article.summary)
+                if summary:
                     p = doc.add_paragraph()
-                    run = p.add_run(f"梗概：{article.summary}")
+                    run = p.add_run(f"梗概：{summary}")
                     run.font.size = Pt(10)
                     run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
                     run.italic = True
@@ -315,7 +318,7 @@ def build_word_digest(
                 # metadata teaser (or an unspecified legacy value) may be
                 # presented as the publisher's English summary.
                 english_summary = (
-                    article.summary
+                    clean_summary_text(article.summary)
                     if article.summary_source in {None, "rss", "meta"}
                     else None
                 )

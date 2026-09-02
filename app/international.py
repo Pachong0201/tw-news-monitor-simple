@@ -323,21 +323,40 @@ RELEVANCE_RULE_VERSION = "international-relevance-v2"
 # keywords: "Washington" or "semiconductor" alone is not a Taiwan-relevant
 # entity/context relationship.
 _ENTITY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Taiwan", ("Taiwan", "Taiwanese", "Taipei", "Taiwan Strait", "Cross-Strait", "Formosa")),
-    ("TSMC", ("TSMC", "Taiwan Semiconductor Manufacturing")),
-    ("Lai Ching-te", ("Lai Ching-te", "William Lai")),
-    ("DPP", ("DPP", "Democratic Progressive Party", "Taiwan's ruling party")),
-    ("KMT", ("KMT", "Kuomintang", "Chinese Nationalist Party")),
-    ("China", ("China", "Chinese", "Beijing", "Xi Jinping", "CCP", "Chinese Communist Party")),
-    ("Beijing", ("Beijing",)),
-    ("PLA", ("PLA", "People's Liberation Army", "People's Liberation Army of China")),
-    ("Taiwan Affairs Office", ("Taiwan Affairs Office", "TAO")),
-    ("United States", ("United States", "US", "U.S.", "Washington", "White House")),
-    ("White House", ("White House",)),
-    ("Washington", ("Washington",)),
-    ("Pentagon", ("Pentagon",)),
-    ("Japan", ("Japan", "Tokyo")),
-    ("Philippines", ("Philippines",)),
+    ("Taiwan", (
+        "Taiwan", "Taiwanese", "Taipei", "Taiwan Strait", "Cross-Strait", "Formosa",
+        "台灣", "台湾", "臺灣", "台北", "台北", "臺北", "台海", "兩岸", "两岸",
+        "台美", "台日", "台澳", "台灣政府", "台湾政府", "台灣軍方", "台湾军方",
+    )),
+    ("TSMC", (
+        "TSMC", "Taiwan Semiconductor Manufacturing", "台積電", "台积电",
+    )),
+    ("Lai Ching-te", ("Lai Ching-te", "William Lai", "賴清德", "赖清德")),
+    ("DPP", (
+        "DPP", "Democratic Progressive Party", "Taiwan's ruling party", "民進黨", "民进党",
+    )),
+    ("KMT", (
+        "KMT", "Kuomintang", "Chinese Nationalist Party", "國民黨", "国民党",
+    )),
+    ("China", (
+        "China", "Chinese", "Beijing", "Xi Jinping", "CCP", "Chinese Communist Party",
+        "中國", "中国", "中共", "習近平", "习近平", "大陸", "大陆",
+    )),
+    ("Beijing", ("Beijing", "北京")),
+    ("PLA", (
+        "PLA", "People's Liberation Army", "People's Liberation Army of China",
+        "解放軍", "解放军", "共軍", "共军", "中國人民解放軍", "中国人民解放军",
+    )),
+    ("Taiwan Affairs Office", ("Taiwan Affairs Office", "TAO", "國台辦", "国台办")),
+    ("United States", (
+        "United States", "US", "U.S.", "Washington", "White House",
+        "美國", "美国", "華盛頓", "华盛顿", "白宮", "白宫",
+    )),
+    ("White House", ("White House", "白宮", "白宫")),
+    ("Washington", ("Washington", "華盛頓", "华盛顿")),
+    ("Pentagon", ("Pentagon", "五角大廈", "五角大厦")),
+    ("Japan", ("Japan", "Tokyo", "日本", "東京", "东京")),
+    ("Philippines", ("Philippines", "菲律賓", "菲律宾")),
 )
 
 _TOPIC_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -346,38 +365,56 @@ _TOPIC_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "drill", "drills", "exercise", "exercises", "maneuver", "maneuvers",
         "defense", "defence", "arms sales", "naval", "maritime", "deterrence",
         "troops", "deployment", "south china sea", "indo-pacific",
+        "軍事", "军事", "軍售", "军售", "軍演", "军演", "演習", "演习", "國防", "国防",
+        "海巡", "導彈", "导弹", "飛彈", "飞弹", "台海",
     )),
     ("diplomacy", (
         "diplomatic", "diplomacy", "talks", "summit", "minister", "ambassador",
         "alliance", "allies", "support", "respond", "response",
         "consultation", "consultations", "clash", "relations",
+        "外交", "外交部", "峰會", "峰会", "大使", "部長", "部长", "聯盟", "联盟",
+        "關係", "关系", "回應", "回应",
     )),
     ("policy", (
         "policy", "policies", "export controls", "arms sales", "commander",
-        "restricts", "controls",
+        "restricts", "controls", "政策", "出口管制", "管制", "指揮官", "指挥官",
     )),
-    ("sanctions", ("sanction", "sanctions", "sanctioned")),
+    ("sanctions", ("sanction", "sanctions", "sanctioned", "制裁")),
     ("semiconductor", (
         "tsmc", "semiconductor", "semiconductors", "chip", "chips", "fab", "fabs",
         "foundry", "wafer", "wafers", "processor", "processors",
+        "半導體", "半导体", "晶片", "芯片", "台積電", "台积电",
     )),
-    ("trade", ("trade", "tariff", "tariffs", "export", "exports", "import", "imports", "duties")),
-    ("cross_strait", ("taiwan strait", "cross-strait", "cross strait", "strait")),
-    ("politics", ("election", "vote", "voting", "ruling party")),
+    ("trade", (
+        "trade", "tariff", "tariffs", "export", "exports", "import", "imports", "duties",
+        "貿易", "贸易", "關稅", "关税", "出口", "進口", "进口",
+    )),
+    ("cross_strait", (
+        "taiwan strait", "cross-strait", "cross strait", "strait", "台灣海峽", "台湾海峡",
+        "兩岸", "两岸", "台海",
+    )),
+    ("politics", (
+        "election", "vote", "voting", "ruling party", "選舉", "选举", "投票", "執政黨", "执政党",
+    )),
     ("economy", (
         "economy", "economic", "growth", "gdp", "inflation", "market", "markets",
         "stock", "stocks", "yuan", "renminbi", "recession", "bond", "bonds",
+        "經濟", "经济", "成長", "成长", "通膨", "通胀", "市場", "市场",
     )),
     ("technology", (
         "technology", "technologies", "tech", "ai", "artificial intelligence",
         "software", "internet", "app", "apps", "data", "smartphone", "smartphones",
+        "科技", "技術", "技术", "人工智慧", "人工智能", "軟體", "软件", "網路", "网络",
     )),
     ("taiwan", (
         "taiwan", "taiwanese", "taipei", "formosa", "kuomintang", "kmt", "dpp",
         "lai ching-te", "taiwan affairs office",
+        "台灣", "台湾", "臺灣", "台北", "臺北", "台海", "兩岸", "两岸", "台美", "台日",
+        "台積電", "台积电", "賴清德", "赖清德", "民進黨", "民进党", "國民黨", "国民党", "國台辦", "国台办",
     )),
     ("china", (
         "china", "chinese", "beijing", "xi jinping", "ccp", "communist party", "pla",
+        "中國", "中国", "北京", "習近平", "习近平", "中共", "共產黨", "共产党", "解放軍", "解放军",
     )),
 )
 
@@ -385,7 +422,11 @@ _STRONG_CHINA_CONTEXT = frozenset({
     "Taiwan", "Taiwan Strait", "Cross-Strait", "TSMC", "military", "Pentagon",
     "sanctions", "sanction", "chip", "chips", "export", "exports", "tariff",
     "tariffs", "arms", "missile", "missiles", "exercise", "exercises",
-    "drill", "drills", "PLA", "Taiwan Affairs Office",
+    "drill", "drills", "PLA", "Taiwan Affairs Office", "台灣", "台湾", "臺灣",
+    "台海", "兩岸", "两岸", "軍事", "军事", "軍售", "军售", "軍演", "军演",
+    "演習", "演习", "國防", "国防", "外交", "政策", "制裁", "關稅", "关税",
+    "貿易", "贸易", "半導體", "半导体", "晶片", "芯片", "出口管制", "印太",
+    "台灣海峽", "台湾海峡",
 })
 
 
@@ -435,14 +476,22 @@ def _is_taiwan_semiconductor_ambiguity(text: str) -> bool:
     named “Taiwan Semiconductor” is not itself evidence about Taiwan policy,
     cross-strait affairs, or security.
     """
-    if not word_contains(text, "Taiwan Semiconductor"):
+    ambiguous_names = ("Taiwan Semiconductor", "台灣半導體", "台湾半导体")
+    if not any(word_contains(text, alias) for alias in ambiguous_names):
         return False
-    if word_contains(text, "Taiwan Semiconductor Manufacturing") or word_contains(text, "TSMC"):
+    if (
+        word_contains(text, "Taiwan Semiconductor Manufacturing")
+        or word_contains(text, "TSMC")
+        or word_contains(text, "台積電")
+        or word_contains(text, "台积电")
+    ):
         return False
     context_aliases = (
         "Taiwan Strait", "Cross-Strait", "military", "missile", "arms", "export",
         "tariff", "sanction", "Pentagon", "China", "Beijing", "Washington",
         "United States", "policy", "geopolitical",
+        "台灣海峽", "台湾海峡", "兩岸", "两岸", "軍事", "军事", "軍售", "军售",
+        "出口", "關稅", "关税", "制裁", "中國", "中国", "北京", "美國", "美国", "政策",
     )
     return not any(word_contains(text, alias) for alias in context_aliases)
 

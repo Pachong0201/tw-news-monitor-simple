@@ -68,7 +68,11 @@ def _setup(tmp_path: Path):
     create_news_db(tmp_path / "news.db", rows)
     create_match_db(tmp_path / "election_watch.db", [])
     create_formal_db(tmp_path / "election_context.db")
-    return make_config(tmp_path)
+    config = make_config(tmp_path)
+    # This fixture is pinned to July 2026; do not let the host date change
+    # which articles the first incremental scan can see.
+    config.raw["scan"]["initial_scan_days"] = 365
+    return config
 
 
 def _cursor(config, repo):

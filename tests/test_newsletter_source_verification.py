@@ -57,7 +57,8 @@ def test_public_gmail_summary_are_independent_and_never_overwrite(tmp_path):
 def test_gmail_evidence_requires_auth_and_does_not_call_mailbox(tmp_path):
     mailbox = FakeMailbox([_message()])
     evidence = run_verification(
-        "gmail", "wsj_newsletter", tmp_path / "wsj_newsletter_gmail_2026-08-15.json", auth=None, mailbox=mailbox
+        "gmail", "wsj_newsletter", tmp_path / "wsj_newsletter_gmail_2026-08-15.json",
+        auth=None, mailbox=mailbox, verification_date="2026-08-15",
     )
     assert evidence["status"] == "operator_action_required"
     assert evidence["reason"] == MAILBOX_AUTH_REQUIRED
@@ -93,13 +94,17 @@ def test_summary_does_not_overwrite_inputs_or_output(tmp_path):
     public_path = tmp_path / "bloomberg_newsletter_public_2026-08-15.json"
     gmail_path = tmp_path / "bloomberg_newsletter_gmail_2026-08-15.json"
     summary_path = tmp_path / "bloomberg_newsletter_summary_2026-08-15.json"
-    run_verification("public", "bloomberg_newsletter", public_path)
-    run_verification("gmail", "bloomberg_newsletter", gmail_path, auth=None)
+    run_verification("public", "bloomberg_newsletter", public_path, verification_date="2026-08-15")
+    run_verification(
+        "gmail", "bloomberg_newsletter", gmail_path,
+        auth=None, verification_date="2026-08-15",
+    )
     public_before = public_path.read_bytes()
     gmail_before = gmail_path.read_bytes()
     run_verification(
         "summary", "bloomberg_newsletter", summary_path,
         public_evidence=public_path, gmail_evidence=gmail_path,
+        verification_date="2026-08-15",
     )
     assert public_path.read_bytes() == public_before
     assert gmail_path.read_bytes() == gmail_before
@@ -107,6 +112,7 @@ def test_summary_does_not_overwrite_inputs_or_output(tmp_path):
         run_verification(
             "summary", "bloomberg_newsletter", summary_path,
             public_evidence=public_path, gmail_evidence=gmail_path,
+            verification_date="2026-08-15",
         )
 
 
@@ -134,6 +140,7 @@ def test_gmail_summary_rechecks_sender_allowlist(tmp_path):
         "gmail", "wsj_newsletter", tmp_path / "wsj_newsletter_gmail_2026-08-15.json",
         auth=AuthContext(None, None, True, AUTHORIZED_READONLY, GMAIL_READONLY_SCOPE, "authorized_user_file"),
         mailbox=UntrustedMailbox([untrusted]),
+        verification_date="2026-08-15",
     )
     assert evidence["status"] == "operator_action_required"
     assert evidence["reason"] == "NO_NEWSLETTER_MESSAGES"
@@ -147,6 +154,7 @@ def test_gmail_invalid_label_fails_closed_before_building_service(tmp_path):
     evidence = run_verification(
         "gmail", "wsj_newsletter", tmp_path / "wsj_newsletter_gmail_2026-08-15.json",
         auth=auth, label="Other", mailbox=None,
+        verification_date="2026-08-15",
     )
     assert evidence["status"] == "operator_action_required"
     assert evidence["reason"] == "LABEL_NOT_ALLOWED"

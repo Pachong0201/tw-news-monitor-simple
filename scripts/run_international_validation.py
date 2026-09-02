@@ -367,7 +367,11 @@ def main() -> int:
     freshness_class.update({a.url: "future" for a in fr.future_time_articles})
 
     # ── importance（复用 app.importance 全链路）───────────────────────
-    importance_results = classify_articles(delivery, importance_rules_config)
+    importance_results = classify_articles(
+        delivery,
+        importance_rules_config,
+        international_config=international_config,
+    )
     pre_summary = importance_summary(importance_results)
     importance_results = finalize_importance(
         importance_results, importance_rules_config

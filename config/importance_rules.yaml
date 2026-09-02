@@ -7,6 +7,9 @@ display:
   max_highlights: 5
 total_cap: 5
 lanes:
+  # 重点简报的台湾/本地保留位；选举位计入此总数，不与其叠加。
+  taiwan_domestic:
+    min_slots: 3
   election:
     min_slots: 1
 scoring:

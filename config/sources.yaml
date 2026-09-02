@@ -171,7 +171,7 @@ sources:
 # 栏目可由 URL path 派生（/world/ /business/ /markets/ /technology/ 等）。
 - access_level: metadata_only
   category: international
-  enabled: true
+  enabled: false
   id: reuters_international
   language: en
   name: Reuters
@@ -181,7 +181,7 @@ sources:
 # 提供 title / description(简短摘要) / link / pubDate / guid，无全文。
 - access_level: public
   category: international
-  enabled: true
+  enabled: false
   id: ft_alphaville
   language: en
   name: Financial Times
@@ -194,7 +194,7 @@ sources:
   article_allowlist:
   - wsj.com
   category: international
-  enabled: true
+  enabled: false
   id: wsj_newsletter
   language: en
   mailbox_label: InternationalNews
@@ -210,7 +210,7 @@ sources:
   article_allowlist:
   - bloomberg.com
   category: international
-  enabled: true
+  enabled: false
   id: bloomberg_newsletter
   language: en
   mailbox_label: InternationalNews
