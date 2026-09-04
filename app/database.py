@@ -64,14 +64,16 @@ class Database:
             """
             CREATE TABLE IF NOT EXISTS news_topics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
                 topic TEXT NOT NULL DEFAULT 'election_2026_local',
                 scope TEXT,
                 region TEXT,
                 regions_json TEXT,
                 event_type TEXT,
                 confidence INTEGER,
-                created_at TEXT NOT NULL
+                source_type TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(url, topic)
             )
             """
         )
@@ -109,31 +111,89 @@ class Database:
         self.conn.commit()
 
     def _ensure_news_topics_table(self) -> None:
-        """Create the news_topics table if missing (idempotent).
-
-        Append-only: existing databases gain the table on connect; repeated
-        runs are no-ops. The table links to articles.url (the stable unique
-        key; Article has no id exposed to collectors).
-        """
+        """Create or upgrade the multi-topic table without losing old rows."""
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS news_topics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
                 topic TEXT NOT NULL DEFAULT 'election_2026_local',
                 scope TEXT,
                 region TEXT,
                 regions_json TEXT,
                 event_type TEXT,
                 confidence INTEGER,
-                created_at TEXT NOT NULL
+                source_type TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(url, topic)
             )
             """
         )
+        columns = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(news_topics)")
+        }
+        unique_indexes: list[tuple[str, ...]] = []
+        for index in self.conn.execute("PRAGMA index_list(news_topics)"):
+            if index[2]:
+                unique_indexes.append(
+                    tuple(
+                        row[2]
+                        for row in self.conn.execute(
+                            f"PRAGMA index_info('{index[1]}')"
+                        )
+                    )
+                )
+
+        if ("url",) in unique_indexes:
+            source_type_expr = "source_type" if "source_type" in columns else "NULL"
+            try:
+                self.conn.execute("BEGIN")
+                self.conn.execute(
+                    """
+                    CREATE TABLE news_topics_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        url TEXT NOT NULL,
+                        topic TEXT NOT NULL DEFAULT 'election_2026_local',
+                        scope TEXT,
+                        region TEXT,
+                        regions_json TEXT,
+                        event_type TEXT,
+                        confidence INTEGER,
+                        source_type TEXT,
+                        created_at TEXT NOT NULL,
+                        UNIQUE(url, topic)
+                    )
+                    """
+                )
+                self.conn.execute(
+                    f"""
+                    INSERT INTO news_topics_new
+                        (id, url, topic, scope, region, regions_json,
+                         event_type, confidence, source_type, created_at)
+                    SELECT id, url, topic, scope, region, regions_json,
+                           event_type, confidence, {source_type_expr}, created_at
+                    FROM news_topics
+                    """
+                )
+                self.conn.execute("DROP TABLE news_topics")
+                self.conn.execute("ALTER TABLE news_topics_new RENAME TO news_topics")
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        elif "source_type" not in columns:
+            self.conn.execute("ALTER TABLE news_topics ADD COLUMN source_type TEXT")
+
         self.conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_news_topics_url
             ON news_topics(url)
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_news_topics_topic
+            ON news_topics(topic)
             """
         )
         self.conn.commit()
@@ -303,19 +363,66 @@ class Database:
         created_at: datetime | None = None,
         topic: str = "election_2026_local",
     ) -> None:
-        """Persist one article's election-topic annotation (idempotent).
+        """Persist one article's election-topic annotation (idempotent)."""
+        self.save_topic(
+            url,
+            topic,
+            scope=scope,
+            region=region,
+            regions=regions,
+            event_type=event_type,
+            confidence=confidence,
+            created_at=created_at,
+        )
 
-        INSERT OR REPLACE keyed by url: repeated classification of the same
-        article simply overwrites, never duplicates, and never errors.
-        """
+    def save_military_topic(
+        self,
+        url: str,
+        *,
+        source_type: str,
+        created_at: datetime | None = None,
+    ) -> None:
+        """Persist a military topic while retaining any other URL topics."""
+        if source_type not in {"commercial_military", "official_military"}:
+            raise ValueError(f"Unsupported military source_type: {source_type}")
+        self.save_topic(
+            url,
+            "military",
+            source_type=source_type,
+            created_at=created_at,
+        )
+
+    def save_topic(
+        self,
+        url: str,
+        topic: str,
+        *,
+        scope: str | None = None,
+        region: str | None = None,
+        regions: list[str] | None = None,
+        event_type: str | None = None,
+        confidence: int | None = None,
+        source_type: str | None = None,
+        created_at: datetime | None = None,
+    ) -> None:
+        """Upsert one (URL, topic) annotation without replacing other topics."""
         import json
 
         created_at = created_at or datetime.now()
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO news_topics
-                (url, topic, scope, region, regions_json, event_type, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO news_topics
+                (url, topic, scope, region, regions_json, event_type,
+                 confidence, source_type, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(url, topic) DO UPDATE SET
+                scope = excluded.scope,
+                region = excluded.region,
+                regions_json = excluded.regions_json,
+                event_type = excluded.event_type,
+                confidence = excluded.confidence,
+                source_type = excluded.source_type,
+                created_at = excluded.created_at
             """,
             (
                 url,
@@ -325,6 +432,7 @@ class Database:
                 json.dumps(regions or [], ensure_ascii=False),
                 event_type,
                 confidence,
+                source_type,
                 created_at.isoformat(),
             ),
         )
@@ -336,7 +444,8 @@ class Database:
 
         row = self.conn.execute(
             "SELECT url, topic, scope, region, regions_json, event_type, "
-            "confidence, created_at FROM news_topics WHERE url = ?",
+            "confidence, created_at FROM news_topics "
+            "WHERE url = ? AND topic = 'election_2026_local'",
             (url,),
         ).fetchone()
         if not row:
@@ -365,7 +474,8 @@ class Database:
         placeholders = ",".join("?" for _ in urls)
         rows = self.conn.execute(
             f"SELECT url, topic, scope, region, regions_json, event_type, "
-            f"confidence, created_at FROM news_topics WHERE url IN ({placeholders})",
+            f"confidence, created_at FROM news_topics "
+            f"WHERE topic = 'election_2026_local' AND url IN ({placeholders})",
             urls,
         ).fetchall()
         result: dict[str, dict] = {}
@@ -389,6 +499,18 @@ class Database:
                 "created_at": row[7],
             }
         return result
+
+    def get_topic_urls(self, urls: list[str], topic: str) -> set[str]:
+        """Return the subset of URLs carrying the requested topic."""
+        if not urls:
+            return set()
+        placeholders = ",".join("?" for _ in urls)
+        rows = self.conn.execute(
+            f"SELECT url FROM news_topics "
+            f"WHERE topic = ? AND url IN ({placeholders})",
+            [topic, *urls],
+        ).fetchall()
+        return {row[0] for row in rows}
 
     def __enter__(self):
         self.connect()

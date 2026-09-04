@@ -221,3 +221,53 @@ def test_network_error_isolated_by_collect_all(tmp_path):
     db.close()
     assert failed == ["broken"]
     assert [article.title for article in inserted] == ["飞弹战备新闻"]
+
+
+def test_collect_all_filters_noise_and_persists_military_topic(tmp_path):
+    class StubCollector:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.last_outcome = None
+
+        def collect(self):
+            from app.models import Article
+
+            now = datetime(2026, 9, 4, 12, 0)
+            return [
+                Article(
+                    self.cfg["id"], self.cfg["name"], "military",
+                    "视导飞弹战备", "https://example.test/keep", now, now, 1,
+                ),
+                Article(
+                    self.cfg["id"], self.cfg["name"], "military",
+                    "军人节优惠活动", "https://example.test/drop", now, now, 2,
+                ),
+            ]
+
+        def close(self):
+            return None
+
+    db = Database(tmp_path / "news.db")
+    db.connect()
+    db.create_tables()
+    cfg = source("stub", "https://example.test/list", "stub")
+    inserted, total, _, failed, _, _, filtered = collect_all(
+        [cfg],
+        db,
+        military_config={
+            "enabled": True,
+            "keep_keywords": ["飞弹", "战备"],
+            "drop_phrases": ["军人节优惠"],
+        },
+        collector_map={"stub": StubCollector},
+    )
+
+    assert total == 2
+    assert failed == []
+    assert filtered == 1
+    assert [article.url for article in inserted] == ["https://example.test/keep"]
+    assert db.get_topic_urls(["https://example.test/keep"], "military") == {
+        "https://example.test/keep"
+    }
+    assert not db.article_exists("https://example.test/drop")
+    db.close()

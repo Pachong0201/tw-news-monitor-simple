@@ -15,6 +15,11 @@ import yaml
 from .collectors import RSSCollector, UDNCollector, EBCCollector, CNAHtmlCollector, LtnRSSCollector, PresidentCollector, ZaobaoCollector, ReutersCollector, FTAlphavilleCollector, WSJRSSCollector, WSJNewsletterCollector, BloombergNewsletterCollector, LtnMilitaryCollector, NownewsMilitaryCollector, MNAMilitaryCollector
 from .category_classifier import apply_content_classification
 from .content_filter import load_content_filter, filter_articles
+from .military import (
+    filter_military_articles,
+    is_military_source,
+    load_military_config,
+)
 from .database import Database
 from .digest import build_digest
 from .lock import InstanceLock
@@ -565,6 +570,7 @@ def _construct_collector(collector_cls, source: dict):
 def collect_all(
     sources: list[dict], db: Database,
     content_filter_config: dict | None = None,
+    military_config: dict | None = None,
     *,
     collector_map: dict | None = None,
     health_store: SourceHealthStore | None = None,
@@ -577,6 +583,8 @@ def collect_all(
     all_raw: list = []
     total_fetched = 0
     failed: list[str] = []
+    military_filtered_count = 0
+    military_source_types: dict[str, str] = {}
 
     active_collector_map = collector_map or COLLECTOR_MAP
     for source in sources:
@@ -610,6 +618,24 @@ def collect_all(
                 continue
             articles = apply_content_classification(articles, source)
             total_fetched += len(articles)
+            if is_military_source(source):
+                articles, military_blocked = filter_military_articles(
+                    articles, military_config
+                )
+                military_filtered_count += len(military_blocked)
+                source_type = source["military_source_type"]
+                for article in articles:
+                    previous_type = military_source_types.get(article.url)
+                    if previous_type != "official_military":
+                        military_source_types[article.url] = source_type
+                if military_blocked:
+                    logger.info(
+                        "Military filter blocked %d/%d from %s: %s",
+                        len(military_blocked),
+                        len(articles) + len(military_blocked),
+                        source["id"],
+                        [a.title[:40] for a in military_blocked[:5]],
+                    )
             if health_store is not None:
                 if not isinstance(outcome, SourceOutcome):
                     outcome = SourceOutcome(200, True, len(articles))
@@ -662,10 +688,10 @@ def collect_all(
 
     # Content filter: exclude out-of-scope news (e.g. social trivia in
     # economy feeds) before saving when mode=drop_before_save.
-    filtered_count = 0
+    filtered_count = military_filtered_count
     if content_filter_config and content_filter_config.get("enabled", False):
         kept_candidates, blocked = filter_articles(candidates, content_filter_config)
-        filtered_count = len(blocked)
+        filtered_count += len(blocked)
         if blocked:
             logger.info(
                 "Content filter blocked %d/%d candidates: %s",
@@ -675,6 +701,14 @@ def collect_all(
         candidates = kept_candidates
 
     inserted = db.save_articles(candidates)
+
+    for url, source_type in military_source_types.items():
+        if not db.article_exists(url):
+            continue
+        try:
+            db.save_military_topic(url, source_type=source_type)
+        except Exception as exc:  # noqa: BLE001 - topic metadata is best-effort
+            logger.warning("Military topic persistence failed for %s: %s", url, exc)
 
     run_removed = len(run_dups) + len(identity_run_dups)
     dup_count = total_fetched - len(inserted) - filtered_count
@@ -890,6 +924,13 @@ def main() -> None:
             "Content filter enabled (mode=%s)",
             content_filter_config.get("mode", "drop_before_save"),
         )
+    military_config = load_military_config(
+        project_root / "config" / "military.yaml"
+    )
+    if military_config.get("enabled", False):
+        logger.info("Military topic filtering enabled")
+    else:
+        logger.info("Military topic filtering disabled (config missing or invalid)")
     international_config = load_international_config(
         project_root / "config" / "international_media.yaml"
     )
@@ -930,7 +971,8 @@ def main() -> None:
         db.connect()
         db.create_tables()
         inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
-            sources, db, content_filter_config, health_store=health_store
+            sources, db, content_filter_config, military_config,
+            health_store=health_store,
         )
         print()
         print("初始化完成：")
@@ -1120,7 +1162,8 @@ def main() -> None:
             db.create_tables()
             source_baselines = _get_source_baselines(db, sources)
             inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
-                sources, db, content_filter_config, health_store=tmp_health
+                sources, db, content_filter_config, military_config,
+                health_store=tmp_health,
             )
             now = datetime.now(TAIPEI)
             classification = _classify_delivery_articles(
@@ -1500,7 +1543,8 @@ def main() -> None:
         source_baselines = _get_source_baselines(db, sources)
 
         inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
-            sources, db, content_filter_config, health_store=health_store
+            sources, db, content_filter_config, military_config,
+            health_store=health_store,
         )
         now = datetime.now(TAIPEI)
 
