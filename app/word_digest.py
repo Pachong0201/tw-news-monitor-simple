@@ -18,6 +18,8 @@ from .international import display_name, is_international_media
 from .international_translation import TranslationResult, translate_article
 from .summarizer import clean_summary_text
 from .time_utils import TAIPEI
+from .election2026.classifier import classify_article as classify_election_article
+from .election2026.models import ElectionAnnotation
 
 CATEGORY_NAMES = {
     "politics": "政治新闻",
@@ -39,6 +41,9 @@ def build_word_digest(
     international_config: dict | None = None,
     international_coverage: dict[str, list[Article]] | None = None,
     international_translations: dict[str, TranslationResult] | None = None,
+    election_config: dict | None = None,
+    election_entities: dict | None = None,
+    election_annotations: dict[str, ElectionAnnotation] | None = None,
 ) -> Path:
     if not articles:
         raise ValueError("No articles to generate Word digest")
@@ -70,6 +75,21 @@ def build_word_digest(
     else:
         intl_media_articles = []
         domestic_media_articles = media_articles
+
+    # 九合一选举专题：启用配置时，从国内媒体稿中摘出九合一新闻，
+    # 其余仍进（一）~（五）分类小节（互斥路由：九合一稿不再出现在政治新闻栏）。
+    election_enabled = bool(election_config and election_config.get("enabled", False))
+    election_articles: list[Article] = []
+    if election_enabled:
+        election_articles = [
+            a for a in domestic_media_articles
+            if _is_election_article(a, election_config, election_entities, election_annotations)
+        ]
+        election_urls = {a.url for a in election_articles}
+        domestic_media_articles = [
+            a for a in domestic_media_articles
+            if a.url not in election_urls
+        ]
     
     doc = Document()
     section = doc.sections[0]
@@ -186,6 +206,23 @@ def build_word_digest(
                 p = doc.add_paragraph()
                 _add_hyperlink(p, article.url, article.url)
                 doc.add_paragraph()
+    
+    # 九合一选举专题一级栏目：位于官方信源之后、新闻媒体之前。
+    # 空则整栏隐藏；二级分栏（全局动向/县市）动态生成、动态编号。
+    if election_articles:
+        heading_num += 1
+        doc.add_heading(f"{'一二三四五六七八九十'[heading_num-1]}、九合一选举", level=1)
+        election_groups = _group_election_articles(
+            election_articles, election_config, election_entities,
+            election_annotations, importance_results,
+        )
+        for sub_idx, (group_title, group_articles) in enumerate(election_groups, 1):
+            doc.add_heading(f"{_subsection_num(sub_idx)}{group_title}", level=2)
+            for idx, article in enumerate(group_articles, 1):
+                _render_media_item(
+                    doc, article, idx, catch_up_urls,
+                    importance_results, prefix_note="",
+                )
     
     if media_articles:
         heading_num += 1
@@ -412,6 +449,183 @@ def build_word_digest(
     doc.save(str(output_path))
     _normalise_docx_package(output_path)
     return output_path
+
+
+def _subsection_num(index: int) -> str:
+    """二级标题编号：（一）（二）…（十）→ 超过十用（11）（12）…
+
+    九合一栏最多可含 22 个县市分组 + 全局动向，汉字下标法只支持到十。
+    """
+    hanzi = "一二三四五六七八九十"
+    if 1 <= index <= 10:
+        return f"（{hanzi[index-1]}）"
+    return f"（{index}）"
+
+
+def _election_annotation_for(
+    article: Article,
+    election_config: dict | None,
+    election_entities: dict | None,
+    election_annotations: dict[str, ElectionAnnotation] | None,
+) -> ElectionAnnotation:
+    """取一篇文章的九合一标注。
+
+    优先用调用方传入的内存标注（主链路已算好）；缺省时用同一确定性
+    纯函数兜底重算（--export-word 等历史稿场景），保证结果一致。
+    """
+    if election_annotations and article.url in election_annotations:
+        return election_annotations[article.url]
+    return classify_election_article(
+        article.title,
+        article.summary or "",
+        config=election_config,
+        entities=election_entities,
+    )
+
+
+def _is_election_article(
+    article: Article,
+    election_config: dict | None,
+    election_entities: dict | None,
+    election_annotations: dict[str, ElectionAnnotation] | None,
+) -> bool:
+    return _election_annotation_for(
+        article, election_config, election_entities, election_annotations
+    ).is_election
+
+
+def _group_election_articles(
+    articles: list[Article],
+    election_config: dict | None,
+    election_entities: dict | None,
+    election_annotations: dict[str, ElectionAnnotation] | None,
+    importance_results: list | None,
+) -> list[tuple[str, list[Article]]]:
+    """把九合一稿按展示分组：全局动向 + 各县市（含合并组）。
+
+    返回 [(组标题, [文章...])]，组顺序 = 全局动向优先 + regions.display_order；
+    空组不出现。组内按 importance（critical/important/normal）→ 时间倒序。
+    """
+    if not election_config:
+        return []
+    regions_cfg = election_config.get("regions", {})
+    merge_groups = regions_cfg.get("merge_groups", {}) or {}
+    display_order = regions_cfg.get("display_order", []) or []
+
+    # 每篇文章归属的展示组名
+    def _display_group(article: Article) -> str:
+        ann = _election_annotation_for(
+            article, election_config, election_entities, election_annotations
+        )
+        if ann.scope == "national":
+            return "全局動向"
+        if ann.scope in ("local", "multi_region"):
+            # 若涉及县市属于某个合并组，展示为该合并组名
+            std_regions = ann.regions or ([ann.region] if ann.region else [])
+            for group_name, members in merge_groups.items():
+                if any(r in members for r in std_regions):
+                    return group_name
+            # 否则展示主县市（若在 display_order 中）
+            if ann.region in display_order:
+                return ann.region
+            # 兜底：display_order 中出现的县市
+            for region in std_regions:
+                if region in display_order:
+                    return region
+        return "全局動向"
+
+    grouped: dict[str, list[Article]] = {}
+    for article in articles:
+        grouped.setdefault(_display_group(article), []).append(article)
+
+    # 排序键：importance → 时间倒序
+    def _sort_key(article: Article):
+        if importance_results:
+            result = next((r for a, r in importance_results if a is article), None)
+            if result is not None:
+                level = result.level
+            else:
+                level = ""
+        else:
+            level = ""
+        order = {"critical": 0, "important": 1, "normal": 2}.get(level, 2)
+        return (
+            order,
+            -(article.published_at.timestamp() if article.published_at else 0),
+            -article.position,
+        )
+
+    result: list[tuple[str, list[Article]]] = []
+    # 全局动向优先
+    if "全局動向" in grouped:
+        result.append(
+            ("全局動向", sorted(grouped["全局動向"], key=_sort_key))
+        )
+    # 其余按 display_order
+    for group_name in display_order:
+        if group_name == "全局動向":
+            continue
+        if group_name in grouped:
+            result.append((group_name, sorted(grouped[group_name], key=_sort_key)))
+    return result
+
+
+def _render_media_item(
+    doc,
+    article: Article,
+    idx: int,
+    catch_up_urls: set[str],
+    importance_results: list | None,
+    prefix_note: str = "",
+) -> None:
+    """渲染一条媒体稿条目（标题/梗概/来源/时间/链接）。
+
+    与既有新闻媒体栏共用同一样式与【重大】【重点】【补发】前缀逻辑。
+    """
+    if importance_results:
+        _lev = next((r.level for a, r in importance_results if a is article), "")
+    else:
+        _lev = ""
+    _pfx = "【重大】" if _lev == "critical" else "【重点】" if _lev == "important" else ""
+    if prefix_note:
+        _pfx = f"{prefix_note}{_pfx}"
+    if article.url in catch_up_urls:
+        display_title = f"{idx}. 【补发】{_pfx}{article.title}"
+    else:
+        display_title = f"{idx}. {_pfx}{article.title}"
+    p = doc.add_paragraph()
+    run = p.add_run(display_title)
+    run.bold = True
+    run.font.size = Pt(12)
+
+    summary = clean_summary_text(article.summary)
+    if summary:
+        p = doc.add_paragraph()
+        run = p.add_run(f"梗概：{summary}")
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+        run.italic = True
+
+    p = doc.add_paragraph()
+    run = p.add_run(f"来源：{article.source_name}")
+    run.font.size = Pt(10)
+    run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+
+    if article.published_at:
+        p = doc.add_paragraph()
+        run = p.add_run(f"发布时间：{article.published_at.strftime('%Y-%m-%d %H:%M')}")
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+
+    p = doc.add_paragraph()
+    if article.url in catch_up_urls:
+        p = doc.add_paragraph()
+        run = p.add_run("状态：补发")
+        run.font.size = Pt(10)
+        run.font.color.rgb = RGBColor(0xCC, 0x66, 0x00)
+    p = doc.add_paragraph()
+    _add_hyperlink(p, article.url, article.url)
+    doc.add_paragraph()
 
 
 def _normalise_docx_package(path: Path) -> None:

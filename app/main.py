@@ -51,6 +51,9 @@ from .notification_candidates import (
     build_notification_candidates,
 )
 from .source_health import SourceHealthStore, SourceOutcome
+from .election2026.config import load_election_config as load_election2026_config
+from .election2026.config import load_entities as load_election2026_entities
+from .election2026.classifier import classify_articles as classify_election2026_articles
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +288,39 @@ def enrich_summaries_safe(articles, db=None) -> None:
         enrich_articles_with_summaries(articles, db)
     except Exception as exc:
         logger.warning("Summary enrichment failed: %s", exc)
+
+
+def _classify_and_persist_election2026(
+    articles, db, election_config, election_entities,
+) -> dict:
+    """九合一分类 + 落库 news_topics（best-effort，不阻断主链路）。
+
+    返回 {url: ElectionAnnotation} 供 Word 渲染直接使用；分类器为确定性
+    纯函数，Word 端缺省时也会用同一函数兜底重算，结果一致。
+    """
+    if not election_config or not election_config.get("enabled", False):
+        return {}
+    if not articles:
+        return {}
+    try:
+        annotations = classify_election2026_articles(
+            articles, election_config, election_entities
+        )
+        if db is not None and annotations:
+            for url, ann in annotations.items():
+                db.save_election_topic(
+                    url,
+                    scope=ann.scope,
+                    region=ann.region,
+                    regions=ann.regions,
+                    event_type=ann.event_type,
+                    confidence=ann.confidence,
+                )
+        logger.info("Election 2026 annotations: %d/%d", len(annotations), len(articles))
+        return annotations
+    except Exception as exc:  # noqa: BLE001 - feature must never break pipeline
+        logger.warning("Election 2026 classification failed safely: %s", exc)
+        return {}
 
 
 class _PrecomputedTranslationLookup:
@@ -858,6 +894,16 @@ def main() -> None:
         logger.info("International media layer enabled")
     else:
         logger.info("International media layer disabled (config missing or disabled)")
+    election2026_config = load_election2026_config(
+        project_root / "config" / "election_2026.yaml"
+    )
+    election2026_entities = load_election2026_entities(
+        project_root / "config" / "election_2026_entities.yaml"
+    )
+    if election2026_config.get("enabled", False):
+        logger.info("2026 九合一选举专题 enabled")
+    else:
+        logger.info("2026 九合一选举专题 disabled (config missing or disabled)")
     db_path_str = os.getenv("NEWS_DB_PATH", "")
     if db_path_str:
         db_path = Path(db_path_str)
@@ -1092,6 +1138,10 @@ def main() -> None:
                 ),
                 importance_rules_config,
             )
+            election_annotations = _classify_and_persist_election2026(
+                digest_articles, db,
+                election2026_config, election2026_entities,
+            )
             translator = _build_international_translator()
             translation_articles = _translation_articles_for_delivery(
                 delivery_articles, intl_coverage
@@ -1164,6 +1214,9 @@ def main() -> None:
                     international_config=international_config,
                     international_coverage=intl_coverage,
                     international_translations=international_translations,
+                    election_config=election2026_config,
+                    election_entities=election2026_entities,
+                    election_annotations=election_annotations,
                 )
                 print(f"Dry-run Word：{word_path}")
         finally:
@@ -1255,11 +1308,18 @@ def main() -> None:
             international_config,
             translator=international_translator,
         )
+        election_annotations = _classify_and_persist_election2026(
+            word_articles, db,
+            election2026_config, election2026_entities,
+        )
         output_path = build_word_digest(
             word_articles, output_dir, generated_at=now,
             international_config=international_config,
             international_coverage=intl_coverage,
             international_translations=international_translations,
+            election_config=election2026_config,
+            election_entities=election2026_entities,
+            election_annotations=election_annotations,
         )
         print(f"Word简报已生成：\n{output_path}")
         logger.info("Word export complete: %s", output_path)
@@ -1376,6 +1436,8 @@ def main() -> None:
             word_path = build_word_digest(
                 articles, output_dir, generated_at=now,
                 catch_up_urls=all_catch_up,
+                election_config=election2026_config,
+                election_entities=election2026_entities,
             )
             print(f"Word generated: {word_path}")
 
@@ -1600,6 +1662,10 @@ def main() -> None:
             # Auto-generate Word digest for the international-filtered article set
             try:
                 output_dir = project_root / "data" / "reports"
+                election_annotations = _classify_and_persist_election2026(
+                    digest_articles, db,
+                    election2026_config, election2026_entities,
+                )
                 word_path = build_word_digest(
                     digest_articles, output_dir, generated_at=now,
                     catch_up_urls=catch_up_urls,
@@ -1607,6 +1673,9 @@ def main() -> None:
                     international_config=international_config,
                     international_coverage=intl_coverage,
                     international_translations=international_translations,
+                    election_config=election2026_config,
+                    election_entities=election2026_entities,
+                    election_annotations=election_annotations,
                 )
                 logger.info("Word digest saved: %s", word_path)
                 # Auto-send to Feishu if credentials are available

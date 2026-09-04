@@ -138,3 +138,36 @@ Python code from the old project.
 - 多选举注意：候选事件 ID 前缀随 `election.candidate_id_prefix` 派生
   （cand_tnn→evt_tnn_，cand_ntp→evt_ntp_）；`other_race_markers` 按主场反转
   （新北主场时台南是"他县"）；`match_reader.city_values` 决定分类器城市。
+
+## 2026 九合一选举专题（2026-09-04 上线，Word 简报专栏）
+
+- 每日新闻自动识别"2026 九合一选举"内容，Word 简报生成"九合一选举"一级
+  栏目（官方信源之后、新闻媒体之前；空则隐藏、编号动态顺延）；官方稿与
+  国际媒体稿不进九合一栏；九合一稿不再出现在普通政治新闻栏；重大九合一
+  稿允许同时【重大】进重点提示与九合一栏（现有 importance 驱动，不改阈值）。
+- 核心引擎：`app/election2026/`（纯本地确定性规则，无 LLM/网络依赖）：
+  `classifier.py`（评分≥60 判正；40-59 疑似区保守子规则；负向词一票否决；
+  政务抑制词拦"市长视察/施政满意度"类误判）、`region_resolver.py`
+  （22 县市别名归一、重叠裁决防"竹北→北市"误吞、≥3 县市并列归全局动向）、
+  `entity_loader.py`（候选人实体仅辅助证据）、`event_classifier.py`
+  （12 类事件类型）、`hanzi_utils.py`（opencc 生成的繁简单字映射，台式
+  校正：台/栗/杰等保持原字）、`config.py`（fail-closed：配置缺失→功能禁用）。
+- 配置：`config/election_2026.yaml`（强/辅助/负向/政务抑制词、全国场景、
+  event_type 映射、22 县市 display_order/merge_groups/aliases）与
+  `config/election_2026_entities.yaml`（候选人实体库，随选情人工扩展）。
+  词表繁体为主；简体标题经 hanzi_utils 归一后匹配。
+- 数据持久化：news.db 新增 `news_topics` 表（url UNIQUE，幂等 INSERT OR
+  REPLACE），`connect()` 自动建表（CREATE IF NOT EXISTS，兼容旧库可重复
+  执行）；Word 渲染以内存分类为准（main 算好传入），`--export-word` 等
+  历史稿场景由 word_digest 内同一纯函数兜底重算，结果一致。
+- Word 结构：`app/word_digest.py::build_word_digest` 新增可选参数
+  `election_config/election_entities/election_annotations`（默认 None =
+  旧行为零改动）；九合一栏二级分组动态编号（一）…（十）→超过十回退
+  （11）（12）…；县市排序按 `regions.display_order`，新竹縣+新竹市
+  合并展示"新竹縣市"（底层仍分别存标准名）。
+- 日志：`[election] matched=true score=… scope=… region=… type=…` /
+  `[election] review score=…` / `[election] rejected reason=…` 单行审计。
+- 测试：`tests/test_election2026_{classifier,region,word,db,config}.py`
+  共 159 项（正≥30/负≥26/边界≥16/全局/多县市/Word 10 case/DB 兼容）。
+  已知边界：现任市长家庭/施政争议、地方议题选举化、跨县市主地区判断、
+  长摘要尾部选举词误伤——靠实体库与词表人工维护持续校正。

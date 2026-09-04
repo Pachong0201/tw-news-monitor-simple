@@ -15,6 +15,7 @@ class Database:
         self._conn = sqlite3.connect(str(self._db_path))
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._migrate_article_columns()
+        self._ensure_news_topics_table()
 
     def close(self) -> None:
         if self._conn is not None:
@@ -59,6 +60,27 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_articles_category
             ON articles(category)
         """)
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS news_topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL UNIQUE,
+                topic TEXT NOT NULL DEFAULT 'election_2026_local',
+                scope TEXT,
+                region TEXT,
+                regions_json TEXT,
+                event_type TEXT,
+                confidence INTEGER,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_news_topics_url
+            ON news_topics(url)
+            """
+        )
         self.conn.commit()
 
     def _migrate_article_columns(self) -> None:
@@ -84,6 +106,36 @@ class Database:
         ):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {ddl}")
+        self.conn.commit()
+
+    def _ensure_news_topics_table(self) -> None:
+        """Create the news_topics table if missing (idempotent).
+
+        Append-only: existing databases gain the table on connect; repeated
+        runs are no-ops. The table links to articles.url (the stable unique
+        key; Article has no id exposed to collectors).
+        """
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS news_topics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL UNIQUE,
+                topic TEXT NOT NULL DEFAULT 'election_2026_local',
+                scope TEXT,
+                region TEXT,
+                regions_json TEXT,
+                event_type TEXT,
+                confidence INTEGER,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_news_topics_url
+            ON news_topics(url)
+            """
+        )
         self.conn.commit()
 
     def article_exists(self, url: str) -> bool:
@@ -238,6 +290,105 @@ class Database:
         """
         rows = self.conn.execute("SELECT url FROM articles").fetchall()
         return [row[0] for row in rows]
+
+    def save_election_topic(
+        self,
+        url: str,
+        *,
+        scope: str,
+        region: str | None,
+        regions: list[str],
+        event_type: str,
+        confidence: int,
+        created_at: datetime | None = None,
+        topic: str = "election_2026_local",
+    ) -> None:
+        """Persist one article's election-topic annotation (idempotent).
+
+        INSERT OR REPLACE keyed by url: repeated classification of the same
+        article simply overwrites, never duplicates, and never errors.
+        """
+        import json
+
+        created_at = created_at or datetime.now()
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO news_topics
+                (url, topic, scope, region, regions_json, event_type, confidence, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                url,
+                topic,
+                scope,
+                region,
+                json.dumps(regions or [], ensure_ascii=False),
+                event_type,
+                confidence,
+                created_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def get_election_topic(self, url: str) -> dict | None:
+        """Return one article's persisted election-topic row (or None)."""
+        import json
+
+        row = self.conn.execute(
+            "SELECT url, topic, scope, region, regions_json, event_type, "
+            "confidence, created_at FROM news_topics WHERE url = ?",
+            (url,),
+        ).fetchone()
+        if not row:
+            return None
+        regions = []
+        if row[4]:
+            try:
+                regions = json.loads(row[4])
+            except ValueError:
+                regions = []
+        return {
+            "url": row[0],
+            "topic": row[1],
+            "scope": row[2],
+            "region": row[3],
+            "regions": regions,
+            "event_type": row[5],
+            "confidence": row[6],
+            "created_at": row[7],
+        }
+
+    def get_election_topics_by_urls(self, urls: list[str]) -> dict[str, dict]:
+        """Return persisted topics for the given urls: {url: row_dict}."""
+        if not urls:
+            return {}
+        placeholders = ",".join("?" for _ in urls)
+        rows = self.conn.execute(
+            f"SELECT url, topic, scope, region, regions_json, event_type, "
+            f"confidence, created_at FROM news_topics WHERE url IN ({placeholders})",
+            urls,
+        ).fetchall()
+        result: dict[str, dict] = {}
+        for row in rows:
+            import json
+
+            regions = []
+            if row[4]:
+                try:
+                    regions = json.loads(row[4])
+                except ValueError:
+                    regions = []
+            result[row[0]] = {
+                "url": row[0],
+                "topic": row[1],
+                "scope": row[2],
+                "region": row[3],
+                "regions": regions,
+                "event_type": row[5],
+                "confidence": row[6],
+                "created_at": row[7],
+            }
+        return result
 
     def __enter__(self):
         self.connect()
