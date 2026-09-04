@@ -72,10 +72,19 @@ def _relevance_to_score(relevance: str) -> float:
     return {"high": 1.0, "medium": 0.65, "low": 0.35}.get(relevance, 0.2)
 
 
-def inline_classify(articles, config, city: str = "tainan") -> dict[str, MatchInfo]:
-    """Reproduce election_watch matching in memory using the same classifier."""
+def inline_classify(articles, config, city: str | None = None) -> dict[str, MatchInfo]:
+    """Reproduce election_watch matching in memory using the same classifier.
+
+    city 缺省时取 config ``match_reader.city_values`` 的第一个值（台南默认）。
+    """
     from app.election_classifier import ElectionClassifier
 
+    cities = config.get("match_reader.city_values") or ["tainan"]
+    if city is None:
+        city = str(cities[0])
+    elif city not in cities:
+        # 显式指定了非配置城市时仍尊重显式值（调用方负责一致性）
+        pass
     classifier = ElectionClassifier(config.path("election_watch_config"))
     result: dict[str, MatchInfo] = {}
     for art in articles:

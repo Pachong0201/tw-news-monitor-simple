@@ -243,6 +243,9 @@ def test_formal_data_unchanged():
 
 # ─── Test 15: CLI exit 0 on success ───
 def test_cli_exit_zero(tmp_path):
+    import os
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
         [sys.executable, '-m', 'app.election_context.validate_event_release',
          '--events', str(SEED / 'events.jsonl'),
@@ -253,10 +256,11 @@ def test_cli_exit_zero(tmp_path):
          '--existing-events', str(SEED / 'events.jsonl'),
          '--existing-sources', str(SEED / 'sources.jsonl'),
          '--output', str(tmp_path / 'event_release_validation.json')],
-        capture_output=True, text=True, cwd=BASE
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=BASE, env=env,
     )
     # After import, formal events validate against themselves; limitations warnings from old events are expected
-    assert result.returncode == 0 or 'limitations field empty' in result.stdout, f"CLI failed: {result.stdout[:800]}"
+    assert result.returncode == 0 or 'limitations field empty' in (result.stdout or ""), f"CLI failed: {result.stdout[:800]}"
     # output lands in the isolated tmp dir, never in the production seed tree
     assert (tmp_path / 'event_release_validation.json').exists()
 

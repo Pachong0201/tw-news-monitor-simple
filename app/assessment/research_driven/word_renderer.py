@@ -30,11 +30,11 @@ def _set_run_font(run, *, name: str = "宋体", size: float = 12, bold: bool = F
         rfonts.set(qn("w:eastAsia"), name)
 
 
-def _add_page_number_footer(doc: Document, report_id: str) -> None:
+def _add_page_number_footer(doc: Document, report_id: str, system_name: str) -> None:
     footer = doc.sections[0].footer
     para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
     para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = para.add_run("台南选情智能研判系统　报告ID：")
+    run = para.add_run(f"{system_name}　报告ID：")
     _set_run_font(run, name="宋体", size=9)
     run2 = para.add_run(report_id)
     _set_run_font(run2, name="宋体", size=9)
@@ -52,8 +52,8 @@ def _add_page_number_footer(doc: Document, report_id: str) -> None:
     _set_run_font(run4, name="宋体", size=9)
 
 
-def word_filename(period_start: str, period_end: str) -> str:
-    return f"台南选情研判_{period_start}至{period_end}.docx"
+def word_filename(period_start: str, period_end: str, *, file_prefix: str = "台南选情研判") -> str:
+    return f"{file_prefix}_{period_start}至{period_end}.docx"
 
 
 def render_article_word(
@@ -67,11 +67,13 @@ def render_article_word(
     poll_cutoff: str,
     report_id: str,
     model: str = "",
+    system_name: str = "台南选情智能研判系统",
+    file_prefix: str = "台南选情研判",
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     generated_at = generated_at or datetime.now()
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = word_filename(period_start, period_end)
+    filename = word_filename(period_start, period_end, file_prefix=file_prefix)
     docx_path = output_dir / filename
 
     doc = Document()
@@ -142,7 +144,7 @@ def render_article_word(
             pr = para.add_run(stripped)
             _set_run_font(pr, name="宋体", size=12)
 
-    _add_page_number_footer(doc, report_id)
+    _add_page_number_footer(doc, report_id, system_name)
     doc.save(docx_path)
 
     return {

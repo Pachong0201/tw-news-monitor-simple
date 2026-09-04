@@ -4,6 +4,8 @@
     [switch]$Disable,
     [ValidateSet("NonInteractive", "Interactive")]
     [string]$LogonMode = "NonInteractive",
+    [ValidateSet("tainan", "new_taipei")]
+    [string]$Election = "tainan",
     [string]$ExportXmlOnly,
     [string]$StartMinute = ""
 )
@@ -14,11 +16,18 @@
 # 错峰：candidate monitor 每 30 分钟运行（当前 :19/:49），本任务在其后 10 分钟
 # （:29/:59）。单实例 IgnoreNew，超时 30 分钟，StartWhenAvailable。
 # S4U 注册被拒时绝不回退交互并冒充成功：保留配置启用，打印管理员命令，exit 1。
+# -Election new_taipei 注册新北并行任务（任务名/runner bat 均按选举派生）。
 
 $ErrorActionPreference = "Stop"
 $TaskName = "Tainan Election Fact Auto Publisher"
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $BatPath = Join-Path $ProjectDir "run_auto_publish_candidates.bat"
+$description = "台南选情低风险事实自动发布 - 每30分钟（monitor 后10分钟错峰）运行已验收的 auto_publish_candidates 保守策略"
+if ($Election -eq "new_taipei") {
+    $TaskName = "New Taipei Election Fact Auto Publisher"
+    $BatPath = Join-Path $ProjectDir "run_auto_publish_candidates_new_taipei.bat"
+    $description = "新北选情低风险事实自动发布 - 每30分钟（monitor 后10分钟错峰）运行已验收的 auto_review_orchestrator 保守策略"
+}
 if (-not (Test-Path -LiteralPath $BatPath)) { throw "Not found: $BatPath" }
 
 function Get-TaskStartMinute([string]$Task) {
@@ -66,7 +75,7 @@ $xmlUser = [System.Security.SecurityElement]::Escape($userId)
 $xmlProjectDir = [System.Security.SecurityElement]::Escape($ProjectDir)
 $xmlBatPath = [System.Security.SecurityElement]::Escape($BatPath)
 $xmlArguments = [System.Security.SecurityElement]::Escape('/d /c call "' + $BatPath + '"')
-$description = [System.Security.SecurityElement]::Escape("台南选情低风险事实自动发布 - 每30分钟（monitor 后10分钟错峰）运行已验收的 auto_publish_candidates 保守策略")
+$description = [System.Security.SecurityElement]::Escape($description)
 $enabled = if ($Disable) { "false" } else { "true" }
 
 $taskXml = @"

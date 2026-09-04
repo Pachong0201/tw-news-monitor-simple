@@ -29,11 +29,13 @@ from app.time_utils import TAIPEI
 from . import IDEMPOTENT_SKIP_STATUSES
 from .adapter import AssessmentLLMAdapter
 from .fact_safety import run_fact_safety_check
-from .prompt import SYSTEM_PROMPT, build_user_payload, parse_model_output
+from .prompt import build_system_prompt, build_user_payload, parse_model_output
 from .research_pack import ResearchPackContext, build_pack_with_context, render_pack_markdown
 from .word_renderer import render_article_word
 
 PRODUCTION_ROOT_REL = Path("data/election_assessment/tainan_2026/production")
+DEFAULT_SEED_ROOT_REL = Path("data/election_seed/tainan_2026")
+DEFAULT_REPORTS_ROOT_REL = Path("data/reports/tainan_2026")
 
 PREVIEW_FILES = (
     "FINAL_ASSESSMENT_PREVIEW.md",
@@ -44,6 +46,47 @@ PREVIEW_FILES = (
 
 def default_project_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def seed_root_from_config(config: dict, project_root: Path | None = None) -> Path:
+    """正式 seed 根目录：优先 config paths.seed_root/coverage_root，缺省台南。"""
+    project_root = project_root or default_project_root()
+    raw = config.get("paths") or {}
+    for key in ("seed_root", "coverage_root"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            p = Path(value)
+            if not p.is_absolute():
+                p = project_root / p
+            return p
+    return project_root / DEFAULT_SEED_ROOT_REL
+
+
+def runs_root_from_config(config: dict, project_root: Path | None = None) -> Path | None:
+    """Assessment 生产 runs 根目录：读 config paths.assessment_runs_root，缺省 None
+    （调用方回落 PRODUCTION_ROOT_REL 台南默认）。"""
+    project_root = project_root or default_project_root()
+    value = (config.get("paths") or {}).get("assessment_runs_root")
+    if isinstance(value, str) and value.strip():
+        p = Path(value)
+        if not p.is_absolute():
+            p = project_root / p
+        return p
+    return None
+
+
+def _election_ctx(config: dict) -> dict:
+    """从 config 提取 prompt/word/fact-safety 的领域化上下文（缺省台南）。"""
+    el = config.get("election") or {}
+    display_name = str(el.get("display_name") or "台南市长选举")
+    region = str(el.get("region") or el.get("region_term") or "台南")
+    report_label = str(el.get("report_label") or "台南市长选情")
+    return {
+        "election_label": report_label,
+        "region": region,
+        "system_name": str(el.get("system_name") or "台南选情智能研判系统"),
+        "file_prefix": str(el.get("file_prefix") or "台南选情研判"),
+    }
 
 
 def sha256_file(path: Path) -> str:
@@ -75,12 +118,18 @@ def _copy_seed_selectively(src_dir: Path, dst_dir: Path) -> None:
         shutil.copy2(child, dst_dir / child.name)
 
 
-def _freeze_production_input(run_dir: Path, project_root: Path) -> dict:
+def _freeze_production_input(
+    run_dir: Path,
+    project_root: Path,
+    seed_root: Path | None = None,
+    formal_db_path: Path | None = None,
+) -> dict:
     """冻结正式输入（db + 所需 seed 副本），返回 facts_cutoff/poll_cutoff/hash。"""
     input_dir = run_dir / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
     prod_data = project_root / "data"
-    prod_seed = prod_data / "election_seed" / "tainan_2026"
+    prod_seed = seed_root or prod_data / "election_seed" / "tainan_2026"
+    prod_db = formal_db_path or prod_data / "election_context.db"
     _coverage_path, coverage_name, coverage_preflight, coverage_validation = (
         select_coverage_version(prod_seed)
     )
@@ -90,7 +139,7 @@ def _freeze_production_input(run_dir: Path, project_root: Path) -> dict:
         frozen_db.unlink()
     if frozen_seed.exists():
         shutil.rmtree(frozen_seed)
-    src = sqlite3.connect(f"file:{prod_data / 'election_context.db'}?mode=ro", uri=True)
+    src = sqlite3.connect(f"file:{prod_db}?mode=ro", uri=True)
     dst = sqlite3.connect(f"file:{frozen_db}", uri=True)
     try:
         with dst:
@@ -127,15 +176,48 @@ def _freeze_production_input(run_dir: Path, project_root: Path) -> dict:
     }
 
 
-def _write_run_config(run_dir: Path, project_root: Path) -> Path:
-    """把正式配置改写到 run 内相对路径（input/election_context.db 等）。"""
+def _write_run_config(
+    run_dir: Path,
+    project_root: Path,
+    seed_root: Path | None = None,
+    config_path: Path | None = None,
+    config: dict | None = None,
+) -> Path:
+    """把正式配置改写到 run 内相对路径（input/election_context.db 等）。
+
+    台南/新北通用：以实际 seed/report 根相对 project_root 的串做替换。
+    config_path 缺省用台南 workspace config（向后兼容）。
+    """
     run_config = run_dir / "input" / "assessment_config.yaml"
-    workspace_config = project_root / "config" / "election_assessment.yaml"
-    text = workspace_config.read_text(encoding="utf-8")
-    text = text.replace("data/election_context.db", "input/election_context.db")
-    text = text.replace("data/election_seed/tainan_2026", "input/election_seed")
-    text = text.replace("data/reports/tainan_2026/evidence_packages", "work/evidence_packages")
-    text = text.replace("data/reports/tainan_2026/generated_reports", "work/generated_reports")
+    src_config = config_path or project_root / "config" / "election_assessment.yaml"
+    text = src_config.read_text(encoding="utf-8")
+    seed_rel = (
+        seed_root.resolve().relative_to(project_root.resolve())
+        if seed_root is not None
+        else DEFAULT_SEED_ROOT_REL
+    )
+    cfg = config or {}
+    paths_cfg = cfg.get("paths") or {}
+    out_root = paths_cfg.get("output_root") or ""
+    if out_root:
+        reports_rel = Path(str(out_root).replace("\\", "/")).parent
+    else:
+        reports_rel = DEFAULT_REPORTS_ROOT_REL
+    # database 路径：台南 data/election_context.db 或新北 data/election_context.new_taipei.db
+    # 统一改写为 run 内 input/election_context.db（load_formal_data 以 run root 解析）。
+    db_raw = str(paths_cfg.get("database") or "data/election_context.db").replace("\\", "/")
+    if not db_raw.startswith("data/"):
+        db_raw = "data/" + db_raw.lstrip("/")
+    text = text.replace(db_raw, "input/election_context.db")
+    text = text.replace(str(seed_rel).replace("\\", "/"), "input/election_seed")
+    text = text.replace(
+        str(reports_rel).replace("\\", "/") + "/evidence_packages",
+        "work/evidence_packages",
+    )
+    text = text.replace(
+        str(reports_rel).replace("\\", "/") + "/generated_reports",
+        "work/generated_reports",
+    )
     text = text.replace("data/locks", "work/locks")
     run_config.parent.mkdir(parents=True, exist_ok=True)
     run_config.write_text(text, encoding="utf-8")
@@ -207,6 +289,12 @@ def run_generation(
     project_root = project_root or default_project_root()
     config = load_config(config_path)
     election_id = config["election"]["election_id"]
+    seed_root = seed_root_from_config(config, project_root)
+    ectx = _election_ctx(config)
+    db_value = (config.get("paths") or {}).get("database") or "data/election_context.db"
+    formal_db_path = Path(db_value)
+    if not formal_db_path.is_absolute():
+        formal_db_path = project_root / formal_db_path
     if period_start is None or period_end is None:
         if as_of.day not in (9, 22):
             raise ValueError("非调度日必须显式提供 --period-start/--period-end")
@@ -269,7 +357,9 @@ def run_generation(
     period_label = f"{period_start:%Y%m%d}_{period_end:%Y%m%d}"
     try:
         period_dir = runs_root / "periods" / period_label
-        frozen = _freeze_production_input(period_dir, project_root)
+        frozen = _freeze_production_input(
+            period_dir, project_root, seed_root=seed_root, formal_db_path=formal_db_path
+        )
         run["input_hash"] = frozen["input_hash"]
         run["facts_cutoff"] = frozen["facts_cutoff"] or ""
         run["poll_cutoff"] = frozen["poll_cutoff"] or ""
@@ -303,7 +393,10 @@ def run_generation(
             }
 
         # 1) Research Pack（基于冻结正式输入）
-        run_config = _write_run_config(period_dir, project_root)
+        run_config = _write_run_config(
+            period_dir, project_root, seed_root=seed_root,
+            config_path=config_path, config=config,
+        )
         run_root_for_pack = period_dir
         prev_report, prev_article = _load_previous_period_report(
             store, election_id, period_start, period_end
@@ -347,13 +440,16 @@ def run_generation(
             provider=provider or ("mock" if mock_fixture else None),
             model=model,
         )
-        payload = build_user_payload(pack, prev_article)
+        payload = build_user_payload(pack, prev_article, election_label=ectx["election_label"])
         if mock_fixture:
             payload["_mock_fixture"] = mock_fixture
         llm_audit: dict[str, Any] = {}
         try:
             result = adapter.complete(
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=build_system_prompt(
+                    election_label=ectx["election_label"],
+                    region=ectx["region"],
+                ),
                 user_payload=payload,
                 json_mode=True,
             )
@@ -397,7 +493,11 @@ def run_generation(
 
         # 3) Fact Safety Check
         audit = run_fact_safety_check(
-            final_article["body"], final_article["title"], pack, period_end.isoformat()
+            final_article["body"],
+            final_article["title"],
+            pack,
+            period_end.isoformat(),
+            region_terms=(ectx["region"], f"{ectx['region']}市") if ectx["region"] else None,
         )
         audit["checked_at"] = datetime.now(TAIPEI).isoformat()
         _atomic_write_json(period_dir / "fact_safety_audit.json", audit)
@@ -430,6 +530,8 @@ def run_generation(
                 poll_cutoff=str(frozen["poll_cutoff"] or ""),
                 report_id=run["run_id"],
                 model=run["model"],
+                system_name=ectx["system_name"],
+                file_prefix=ectx["file_prefix"],
             )
             word_path = Path(word_info["docx_path"])
             shutil.copy2(word_path, period_dir / "final_article.docx")

@@ -3,12 +3,24 @@
     [switch]$Force,
     [string]$ProductionDir = "",
     [string]$TaskName = "Tainan Election Candidate Monitor",
+    [ValidateSet("tainan", "new_taipei")]
+    [string]$Election = "tainan",
     [string]$StartMinute = ""
 )
 
 $ErrorActionPreference = "Stop"
 if (-not $ProductionDir) { $ProductionDir = Split-Path -Parent $PSScriptRoot }
 $runner = Join-Path $ProductionDir "run_candidate_monitor.bat"
+$logDir = Join-Path $ProductionDir "data\election_candidates\tainan_2026\logs"
+$description = "台南选情候选事实监控 - 每30分钟增量生成候选（独立于新闻采集）"
+if ($Election -eq "new_taipei") {
+    if ($TaskName -eq "Tainan Election Candidate Monitor") {
+        $TaskName = "New Taipei Election Candidate Monitor"
+    }
+    $runner = Join-Path $ProductionDir "run_candidate_monitor_new_taipei.bat"
+    $logDir = Join-Path $ProductionDir "data\election_candidates\new_taipei_2026\logs"
+    $description = "新北选情候选事实监控 - 每30分钟增量生成候选（独立于新闻采集）"
+}
 
 function Get-TaskStartMinute([string]$Task) {
     $out = & schtasks.exe /query /tn $Task /v /fo LIST 2>$null
@@ -49,8 +61,8 @@ Write-Host "候选监控启动分钟（错峰）：$StartMinute"
 if (-not (Test-Path -LiteralPath $runner)) {
     throw "Not found: $runner"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $ProductionDir "data\election_candidates\tainan_2026\logs"))) {
-    New-Item -ItemType Directory -Force -Path (Join-Path $ProductionDir "data\election_candidates\tainan_2026\logs") | Out-Null
+if (-not (Test-Path -LiteralPath $logDir)) {
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 }
 
 $now = Get-Date
@@ -66,7 +78,7 @@ $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $xmlUser = [System.Security.SecurityElement]::Escape($userId)
 $xmlRunner = [System.Security.SecurityElement]::Escape($runner)
 $xmlDir = [System.Security.SecurityElement]::Escape($ProductionDir)
-$description = [System.Security.SecurityElement]::Escape("台南选情候选事实监控 - 每30分钟增量生成候选（独立于新闻采集）")
+$description = [System.Security.SecurityElement]::Escape($description)
 $xmlArgs = [System.Security.SecurityElement]::Escape('/d /c call "' + $runner + '"')
 
 $taskXml = @"

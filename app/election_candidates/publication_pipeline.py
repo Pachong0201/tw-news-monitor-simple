@@ -460,7 +460,7 @@ def _write_diff_and_audit(
         state = json.loads(active["state_json"]) if isinstance(active["state_json"], str) else active["state_json"]
         prev_coverage = state.get("coverage", {}) or {}
     downstream = {
-        "election_id": "tainan_mayoral_2026",
+        "election_id": config.canonical_election_id,
         "publication_batch_id": batch["batch_id"],
         "formal_state_hash": formal_state_business_hash_from_db(config.path("formal_db")),
         "facts_cutoff": facts_cutoff,

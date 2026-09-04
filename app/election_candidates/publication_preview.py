@@ -51,6 +51,12 @@ def formal_seed_business_hash(config) -> str:
     return h.hexdigest()
 
 
+def election_prefix_from_config(config) -> str:
+    """Event id 前缀：cand_ntp -> ntp（缺省回落 tnn 台南约定）。"""
+    prefix = str(config.get("election.candidate_id_prefix") or "cand_tnn")
+    return prefix[5:] if prefix.startswith("cand_") else prefix
+
+
 def resolve_sources(decision_sources: list[dict], seed_sources: list[dict], config) -> dict[str, Any]:
     existing = {s["source_id"]: s for s in seed_sources}
     reused = []
@@ -82,6 +88,7 @@ def build_preview(
     decisions = [repo.get_review_decision(rid) for rid in review_decision_ids]
     if any(d is None for d in decisions):
         raise ValueError("one or more review decisions not found")
+    election_prefix = election_prefix_from_config(config)
     seed_events = read_seed_events(config)
     seed_sources = read_seed_sources(config)
     seed_sources_by_id = {s["source_id"]: s for s in seed_sources}
@@ -209,15 +216,20 @@ def build_preview(
         # create_event / approve_as_subevent
         date = event_payload.get("event_date") or ""
         title = event_payload.get("title") or ""
-        event_id = allocate_event_id(allocated_event_ids, date, title)
+        event_id = allocate_event_id(allocated_event_ids, date, title, election_prefix=election_prefix)
         allocated_event_ids.add(event_id)
         payload = {
             "event_id": event_id,
             "election_id": election_id,
             "occurred_at": date,
+            "event_date": date,
             "event_type": event_payload.get("event_type", "unknown"),
             "title": title,
             "fact_summary": event_payload.get("summary", ""),
+            # 人工/自动审核发布的事件视为已验证事实（seed 校验要求合法 fact_status）
+            "fact_status": "verified",
+            "significance_score": 50,
+            "limitations": [],
             "actors": event_payload.get("actors", []),
             "issues": event_payload.get("themes", []),
             "sources": [],

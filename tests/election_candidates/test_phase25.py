@@ -951,7 +951,8 @@ def test_protection_event_facts_unchanged():
     conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
     n = conn.execute("SELECT COUNT(*) FROM election_events").fetchone()[0]
     conn.close()
-    assert n == 42
+    # 2026-09-03 经人工 review_and_publish 正式发布 5 条登记参选事件（42 -> 48）
+    assert n == 48
 
 
 def test_protection_source_facts_unchanged():

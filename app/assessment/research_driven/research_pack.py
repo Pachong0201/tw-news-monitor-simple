@@ -32,7 +32,8 @@ from app.assessment.state_diff import diff_snapshots
 
 PACK_SCHEMA_VERSION = "1.0"
 
-# 阵营关键词映射（deterministic camp assignment）
+# 阵营关键词映射（deterministic camp assignment）——台南默认；多选举时由
+# config ``research_pack.camps`` 覆盖（见 build_research_pack）。
 CAMP_KEYWORDS: dict[str, list[str]] = {
     "chen_ting_fei": ["陈亭妃", "亭妃"],
     "hsieh_lung_chieh": ["谢龙介", "龙介"],
@@ -41,6 +42,32 @@ CAMP_KEYWORDS: dict[str, list[str]] = {
     "tpp": ["民众党", "黄国昌", "柯文哲", "白营"],
     "blue_white": ["蓝白", "蓝白合作", "白蓝"],
 }
+
+# 台南默认的研究包阵营章节（向后兼容；新北由 config research_pack.camps 覆盖）。
+DEFAULT_CAMP_SECTIONS: list[dict[str, str]] = [
+    {"key": "chen_ting_fei", "label": "陈亭妃阵营"},
+    {"key": "hsieh_lung_chieh", "label": "谢龙介阵营"},
+    {"key": "lai_faction", "label": "民进党派系与中央关系（赖系）"},
+    {"key": "blue_white", "label": "蓝白合作"},
+]
+
+
+def _camp_defs_from_config(config: dict) -> tuple[dict[str, list[str]], list[dict[str, str]]]:
+    """从 config 读阵营定义；缺省回落台南默认。"""
+    raw = (config.get("research_pack") or {}).get("camps") or []
+    if not raw:
+        return dict(CAMP_KEYWORDS), list(DEFAULT_CAMP_SECTIONS)
+    keywords: dict[str, list[str]] = {}
+    sections: list[dict[str, str]] = []
+    for item in raw:
+        key = str(item.get("key") or "").strip()
+        label = str(item.get("label") or key).strip()
+        kws = [str(x) for x in (item.get("keywords") or []) if str(x).strip()]
+        if not key:
+            continue
+        keywords[key] = kws or [label]
+        sections.append({"key": key, "label": label})
+    return keywords or dict(CAMP_KEYWORDS), sections or list(DEFAULT_CAMP_SECTIONS)
 
 
 @dataclass
@@ -187,9 +214,15 @@ def _compact_event(event: dict, formal: FormalData, seed_index: dict[str, dict])
     }
 
 
-def _assign_camps(events: list[dict], formal: FormalData, seed_index: dict[str, dict]) -> dict[str, list[dict]]:
+def _assign_camps(
+    events: list[dict],
+    formal: FormalData,
+    seed_index: dict[str, dict],
+    camp_keywords: dict[str, list[str]] | None = None,
+) -> dict[str, list[dict]]:
     """按人物/阵营把事件分组（一个事件可属多个阵营）。"""
-    camps: dict[str, list[dict]] = {key: [] for key in CAMP_KEYWORDS}
+    camp_keywords = camp_keywords or CAMP_KEYWORDS
+    camps: dict[str, list[dict]] = {key: [] for key in camp_keywords}
     for ev in events:
         text = " ".join(
             str(x)
@@ -200,7 +233,7 @@ def _assign_camps(events: list[dict], formal: FormalData, seed_index: dict[str, 
                 ",".join(ev.get("actor_statements") or []),
             ]
         )
-        for camp, keywords in CAMP_KEYWORDS.items():
+        for camp, keywords in camp_keywords.items():
             if any(kw in text for kw in keywords):
                 camps[camp].append(_compact_event(ev, formal, seed_index))
     for key in list(camps):
@@ -419,7 +452,10 @@ def build_research_pack(
 
     period_compact = [_compact_event(e, formal, seed_index) for e in period_events]
     background_compact = [_compact_event(e, formal, seed_index) for e in background_events]
-    camps = _assign_camps(period_events + background_events, formal, seed_index)
+    camp_keywords, camp_sections = _camp_defs_from_config(config)
+    camps = _assign_camps(
+        period_events + background_events, formal, seed_index, camp_keywords=camp_keywords
+    )
     governance = _governance_issues(period_compact + background_compact, formal)
 
     active_state = formal.active_snapshot.get("state") or {}
@@ -452,6 +488,10 @@ def build_research_pack(
         "election": {
             "election_id": config["election"]["election_id"],
             "display_name": config["election"]["display_name"],
+            "report_label": (
+                (config["election"].get("report_label"))
+                or str(config["election"]["display_name"])
+            ),
         },
         "period": {
             "period_start": start.isoformat(),
@@ -479,6 +519,7 @@ def build_research_pack(
         "period_events": period_compact,
         "background_events": background_compact,
         "camps": camps,
+        "camp_sections": camp_sections,
         "polls": polls_section,
         "governance_issues": governance,
         "previous_state_baseline": _previous_state_baseline(formal),
@@ -535,10 +576,12 @@ def render_pack_markdown(pack: dict) -> str:
     add = lines.append
     p = pack["period"]
     ds = pack["data_status"]
-    add("# 台南市长选情研判研究包（Assessment Research Pack）")
+    display_name = (pack.get("election") or {}).get("display_name") or "台南市长选举"
+    report_label = (pack.get("election") or {}).get("report_label") or "台南市长选情"
+    add(f"# {report_label}研判研究包（Assessment Research Pack）")
     add("")
     add("本文件全部内容来自已人工审核的正式事实底座，可独立使用：")
-    add("上传本文件即可撰写台南选情研判，无需访问数据库。")
+    add(f"上传本文件即可撰写{report_label}研判，无需访问数据库。")
     add("")
     add("## 报告周期与事实审核截止")
     add(f"- 报告周期：{p['period_start']} 至 {p['period_end']}")
@@ -592,31 +635,28 @@ def render_pack_markdown(pack: dict) -> str:
             add(f"- {d.get('dimension')}：{prev} → {cur}")
     add("")
 
-    add("## 三、陈亭妃阵营")
-    for ev in pack["camps"].get("chen_ting_fei", []):
-        add(f"- [{ev['event_date']}] {ev['title']}")
-    add("")
-    add("## 四、谢龙介阵营")
-    for ev in pack["camps"].get("hsieh_lung_chieh", []):
-        add(f"- [{ev['event_date']}] {ev['title']}")
-    add("")
-    add("## 五、民进党派系与中央关系（赖系）")
-    for ev in pack["camps"].get("lai_faction", []):
-        add(f"- [{ev['event_date']}] {ev['title']}")
-    add("")
-    add("## 六、蓝白合作")
-    for ev in pack["camps"].get("blue_white", []):
-        add(f"- [{ev['event_date']}] {ev['title']}")
-    add("")
+    # 阵营章节：按 pack 内 camp_sections 顺序（config 驱动，缺省台南 4 节）。
+    # 与历史行为一致：每个定义阵营都输出标题（空阵营无列表项）。
+    section_no = 3
+    for section in pack.get("camp_sections") or DEFAULT_CAMP_SECTIONS:
+        key = section.get("key") or ""
+        label = section.get("label") or key
+        add(f"## {section_no_cn(section_no)}、{label}")
+        for ev in (pack.get("camps") or {}).get(key, []):
+            add(f"- [{ev['event_date']}] {ev['title']}")
+        add("")
+        section_no += 1
 
-    add("## 七、治理议题")
+    add(f"## {section_no_cn(section_no)}、治理议题")
+    section_no += 1
     for issue in pack["governance_issues"]:
         add(f"- {issue['issue']}：涉及事件 {len(issue['event_ids'])} 件")
     if not pack["governance_issues"]:
         add("- 本期无明显治理议题进入选举讨论")
     add("")
 
-    add("## 八、民调")
+    add(f"## {section_no_cn(section_no)}、民调")
+    section_no += 1
     polls = pack["polls"]
     if polls.get("poll_gap"):
         add(f"- {polls['no_new_poll_note']}")
@@ -631,13 +671,15 @@ def render_pack_markdown(pack: dict) -> str:
             add(f"  - {ch['option']}（{ch['pollster']}）：{ch['from_value']} → {ch['to_value']}（{ch['delta']:+}）")
     add("")
 
-    add("## 九、历史背景事件")
+    add(f"## {section_no_cn(section_no)}、历史背景事件")
+    section_no += 1
     for ev in pack["background_events"]:
         add(f"- [{ev['event_date']}] {ev['title']}（{ev.get('evidence_role')}）")
     add("")
 
     prev_report = pack.get("previous_period_report")
-    add("## 十、上一期正式报告")
+    add(f"## {section_no_cn(section_no)}、上一期正式报告")
+    section_no += 1
     if prev_report:
         thesis = prev_report.get("primary_thesis") or {}
         if thesis.get("judgment"):
@@ -651,24 +693,36 @@ def render_pack_markdown(pack: dict) -> str:
         add("- 上一期尚无正式报告，本期以上一状态基线（快照）作为比较起点。")
     add("")
 
-    add("## 十一、证据限制")
+    add(f"## {section_no_cn(section_no)}、证据限制")
+    section_no += 1
     for lim in pack["known_limitations"]:
         add(f"- {lim}")
     if not pack["known_limitations"]:
         add("- 无额外已知限制。")
     add("")
     if pack["do_not_infer"]:
-        add("## 十二、禁止推断事项")
+        add(f"## {section_no_cn(section_no)}、禁止推断事项")
+        section_no += 1
         for dni in pack["do_not_infer"]:
             add(f"- {dni}")
         add("")
 
-    add("## 十三、来源清单")
+    add(f"## {section_no_cn(section_no)}、来源清单")
     for s in pack["sources"]:
         add(f"- {s['publisher']}《{s['title']}》（{s['published_at']}）")
     add("")
     add("（正文撰写时不得出现 event_id / source_id 等内部标识；本清单仅供追溯。）")
     return "\n".join(lines) + "\n"
+
+
+def section_no_cn(n: int) -> str:
+    """数字序号转中文：1→一 ... 11→十一（13 以内够用）。"""
+    digits = "一二三四五六七八九十"
+    if n <= 10:
+        return digits[n - 1]
+    if n < 20:
+        return "十" + (digits[n - 11] if n > 10 else "")
+    return str(n)
 
 
 def build_pack_with_context(

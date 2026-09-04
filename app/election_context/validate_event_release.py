@@ -384,7 +384,8 @@ def check_event_release(
             'snapshots': db.execute("SELECT COUNT(*) FROM election_state_snapshots").fetchone()[0],
         }
         db.close()
-        baseline = {'events': 42, 'sources': 113, 'actors': 7, 'polls': 15, 'questions': 39, 'results': 116, 'snapshots': 5}
+        # 2026-09-03 经 review_and_publish 正式发布 6 条登记/表态事件（42 -> 48）
+        baseline = {'events': 48, 'sources': 113, 'actors': 7, 'polls': 15, 'questions': 39, 'results': 116, 'snapshots': 5}
         for k, v in baseline.items():
             if formal_counts.get(k) != v:
                 formal_unchanged = False

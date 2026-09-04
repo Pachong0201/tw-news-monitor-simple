@@ -1,4 +1,4 @@
-"""Explainable relevance calibration for Tainan mayoral election news."""
+"""Explainable relevance calibration for mayoral election news (per-election via config)."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def assign_relevance_label(article: NormalizedArticle, config) -> tuple[str, lis
         return "collection_error", reasons + ["collection_error_marker"], evidence
 
     if has_other_race and not region and not actors:
-        return "irrelevant", reasons + ["other_race_without_tainan"], evidence
+        return "irrelevant", reasons + ["other_race_without_region_or_actor"], evidence
 
     if uncertain:
         return "contextual", reasons + ["uncertain_report_not_direct"], evidence
@@ -96,4 +96,4 @@ def assign_relevance_label(article: NormalizedArticle, config) -> tuple[str, lis
     if election and has_national:
         return "contextual", reasons + ["election_background_national"], evidence
 
-    return "irrelevant", reasons + ["no_direct_tainan_relation"], evidence
+    return "irrelevant", reasons + ["no_direct_election_relation"], evidence

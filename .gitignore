@@ -27,3 +27,6 @@ token*.json
 .oauth/
 oauth/
 secrets/
+
+# Local AI assistant preferences (not shared)
+.commandcode/

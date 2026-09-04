@@ -8,7 +8,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from app.assessment.research_driven.generation import (
-    PRODUCTION_ROOT_REL,
+    load_config,
+    runs_root_from_config,
     run_generation,
 )
 from app.time_utils import TAIPEI
@@ -38,7 +39,12 @@ def main() -> int:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[3]
-    runs_root = args.runs_root or project_root / PRODUCTION_ROOT_REL
+    config = load_config(args.config.resolve())
+    runs_root = (
+        args.runs_root
+        or runs_root_from_config(config, project_root)
+        or project_root / "data/election_assessment/tainan_2026/production"
+    )
     result = run_generation(
         config_path=args.config.resolve(),
         runs_root=runs_root,

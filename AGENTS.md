@@ -67,7 +67,6 @@ problems. This project is rebuilt from scratch without copying any
 Python code from the old project.
 
 ## 台南选情研判 V1 生产契约（2026-08-15 定型，research-driven）
-
 - 生产路径：`app/assessment/research_driven/`（`assessment_mode=research_driven`）。
   调度入口 `python -m app.assessment.research_driven.scheduled` →
   `generation.run_generation()`。流程：Period Gate（facts_cutoff >= period_end，
@@ -107,3 +106,35 @@ Python code from the old project.
 - 后续所有代码与配置改动只在本主文件夹进行；`data/news.db` 与
   `data/election_watch.db` 是实时运行数据（会随计划任务增长），
   相关测试保护的是完整性而非字节哈希。
+
+## 新北选情研判（2026-09-03 上线，与台南并行同构）
+
+- 第二选举：`new_taipei_mayoral_2026`（`TW-2026-NTP-MAYOR`，2026 新北市長）。
+  通过独立 config 激活，台南默认行为零改动（向后兼容）。
+- 关键文件：`config/election_candidate_pipeline.new_taipei.yaml`（候选管线）、
+  `config/election_assessment.new_taipei.yaml`（评估/研判）、
+  `data/election_seed/new_taipei_2026/`（种子+coverage，含初始
+  `fact_coverage_20260903_v1`）、`data/election_candidates/new_taipei_2026/`、
+  `data/election_assessment/new_taipei_2026/production/`。
+- **独立正式库**：`data/election_context.new_taipei.db`（不可与台南共享
+  `election_context.db`——候选发布管线 commit 会整体替换 formal DB，共享会被覆盖）。
+- news.db / election_watch.db 共享；匹配走 `election_watch.yaml` 的 new_taipei 块
+  （词表含侯友宜/李四川/苏巧慧等，随选情演进人工补充）。
+- 命令（多数支持 `--config`/`--runs-root` 覆盖）：
+  - 候选监控：`python -m app.election_candidates.build_candidate_queue --config config/election_candidate_pipeline.new_taipei.yaml --since-last-success`
+  - 自动审核编排：`python -m app.election_candidates.auto_review_orchestrator --config config/election_candidate_pipeline.new_taipei.yaml`
+  - 人工审核：`list_candidates/show_candidate/export_review_template/review_and_publish/complete_review` 均加 `--config ...new_taipei.yaml`
+  - 研判生成：`python -m app.assessment.research_driven.scheduled --config config/election_assessment.new_taipei.yaml`
+    （runs_root 从 config `paths.assessment_runs_root` 自动派生）
+  - 人工终审：`python -m app.assessment.research_driven.review list/show/approve/reject`（传 `--runs-root data/election_assessment/new_taipei_2026/production`）
+- 计划任务（注册时加 `-Election new_taipei`，任务名带 New Taipei 前缀）：
+  - `New Taipei Election Candidate Monitor`（每 30 分钟）
+  - `New Taipei Election Fact Auto Publisher`（每 30 分钟错峰）
+  - `New Taipei Election Assessment`（每月 9/22 09:00 Asia/Taipei）
+- 评估层已参数化（config 驱动，台南回落默认）：prompt 的
+  `election_label/region`、研究包 `report_label/camp_sections`（新北配置
+  `research_pack.camps`）、Word 页脚/文件名、fact_safety 的 region_terms、
+  generation 的 seed/runs/formal_db 路径。
+- 多选举注意：候选事件 ID 前缀随 `election.candidate_id_prefix` 派生
+  （cand_tnn→evt_tnn_，cand_ntp→evt_ntp_）；`other_race_markers` 按主场反转
+  （新北主场时台南是"他县"）；`match_reader.city_values` 决定分类器城市。

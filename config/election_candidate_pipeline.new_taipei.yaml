@@ -8,7 +8,7 @@ versions:
 deployment:
   enabled: true
   scheduler_mode: since-last-success
-  log_path: data/election_candidates/tainan_2026/logs/candidate_pipeline.jsonl
+  log_path: data/election_candidates/new_taipei_2026/logs/candidate_pipeline.jsonl
 
 run_retention:
   enabled: true
@@ -16,27 +16,27 @@ run_retention:
   max_total_mb: 40
 
 election:
-  canonical_election_id: tainan_mayoral_2026
+  canonical_election_id: new_taipei_mayoral_2026
   election_id_aliases:
-    tainan_mayoral_2026: TW-2026-TNN-MAYOR
-  candidate_id_prefix: cand_tnn
+    new_taipei_mayoral_2026: TW-2026-NTP-MAYOR
+  candidate_id_prefix: cand_ntp
   candidate_id_hash_length: 10
 
 paths:
   news_db: data/news.db
   match_db: data/election_watch.db
-  formal_db: data/election_context.db
-  candidate_db: data/election_candidates/tainan_2026/candidate_fact_pipeline.db
-  output_root: data/election_candidates/tainan_2026
+  formal_db: data/election_context.new_taipei.db
+  candidate_db: data/election_candidates/new_taipei_2026/candidate_fact_pipeline.db
+  output_root: data/election_candidates/new_taipei_2026
   election_watch_config: config/election_watch.yaml
-  events_seed: data/election_seed/tainan_2026/events.jsonl
-  sources_seed: data/election_seed/tainan_2026/sources.jsonl
-  initial_snapshot: data/election_seed/tainan_2026/initial_snapshot.json
-  snapshot_history: data/election_seed/tainan_2026/snapshot_history.jsonl
+  events_seed: data/election_seed/new_taipei_2026/events.jsonl
+  sources_seed: data/election_seed/new_taipei_2026/sources.jsonl
+  initial_snapshot: data/election_seed/new_taipei_2026/initial_snapshot.json
+  snapshot_history: data/election_seed/new_taipei_2026/snapshot_history.jsonl
   poll_seeds:
-    - data/election_seed/tainan_2026/polls.jsonl
-    - data/election_seed/tainan_2026/poll_source_links.jsonl
-  coverage_root: data/election_seed/tainan_2026
+    - data/election_seed/new_taipei_2026/polls.jsonl
+    - data/election_seed/new_taipei_2026/poll_source_links.jsonl
+  coverage_root: data/election_seed/new_taipei_2026
   post_publication_root: data/post_publication
   backup_root: data/backups
   lock_root: data/locks
@@ -46,7 +46,7 @@ match_reader:
   mode: inline_classifier   # persisted | inline_classifier（article_matches 为空时的实际入口）
   table: article_matches
   city_values:
-    - tainan
+    - new_taipei
   relevance_required: false
   min_relevance: low
 
@@ -354,9 +354,7 @@ relevance:
     - 修食安法
     - 食安法
   other_race_markers:
-    - 新北
-    - 花蓮
-    - 花莲
+    - 台南
     - 高雄
     - 宜蘭
     - 基隆
@@ -366,6 +364,8 @@ relevance:
     - 台北
     - 北市
     - 中市
+    - 花蓮
+    - 花莲
     - 韓國
     - 中國
   party_internal_markers:
@@ -390,7 +390,7 @@ relevance:
     - 合體看板
     - 競選總部
     - 宣布參選
-    - 參選台南
+    - 參選新北
     - 競選活動
   direct_statement_verbs:
     - 表示
@@ -430,7 +430,7 @@ event_types:
       negative_patterns: [提名, 登記, 辯論, 勝出, 出爐]
       required_actor_or_action: 初選
       conflicting_types: [primary_result, party_nomination]
-      examples: [民進黨台南市長初選起跑]
+      examples: [民進黨新北市長初選起跑]
     primary_registration:
       positive_patterns: [完成登記, 登記參選, 領表]
       negative_patterns: []
@@ -442,7 +442,7 @@ event_types:
       negative_patterns: []
       required_actor_or_action: 辯論
       conflicting_types: [primary_procedure]
-      examples: [台南市長初選辯論登場]
+      examples: [新北市長初選辯論登場]
     primary_result:
       positive_patterns: [初選結果, 勝出, 出爐]
       negative_patterns: [提名]
@@ -460,7 +460,7 @@ event_types:
       negative_patterns: [提名, 登記]
       required_actor_or_action: ""
       conflicting_types: [campaign_event]
-      examples: [謝龍介啟動台南市長競選準備]
+      examples: [謝龍介啟動新北市長競選準備]
     campaign_event:
       positive_patterns: [造勢, 掃街, 拜票, 競選活動, 座談會, 市場]
       negative_patterns: [後援會, 看板]
@@ -478,7 +478,7 @@ event_types:
       negative_patterns: []
       required_actor_or_action: 後援會
       conflicting_types: [campaign_organization]
-      examples: [大台南觀光產業後援會成立]
+      examples: [大新北觀光產業後援會成立]
     joint_campaign:
       positive_patterns: [聯合看板, 合體看板, 同框, 聯合造勢]
       negative_patterns: []
@@ -496,13 +496,13 @@ event_types:
       negative_patterns: [完成]
       required_actor_or_action: 協調
       conflicting_types: [alliance_proposal]
-      examples: [藍白就台南市長人選協調]
+      examples: [藍白就新北市長人選協調]
     party_integration:
       positive_patterns: [整合, 團結, 全代會, 黨內]
       negative_patterns: []
       required_actor_or_action: ""
       conflicting_types: [faction_conflict]
-      examples: [民進黨台南黨內整合]
+      examples: [民進黨新北黨內整合]
     faction_conflict:
       positive_patterns: [派系, 角力, 不合, 交棒, 內鬥, 不爽]
       negative_patterns: []
@@ -526,7 +526,7 @@ event_types:
       negative_patterns: []
       required_actor_or_action: 民調
       conflicting_types: []
-      examples: [台南市長民調公布]
+      examples: [新北市長民調公布]
     governance_event:
       positive_patterns: [視察, 市政, 工程, 座談]
       negative_patterns: [災, 支持, 政見, 政策, 承諾]
@@ -538,7 +538,7 @@ event_types:
       negative_patterns: []
       required_actor_or_action: 災
       conflicting_types: [governance_event]
-      examples: [台南市府防災整備]
+      examples: [新北市府防災整備]
     policy_proposal:
       positive_patterns: [政見, 政策, 承諾, 方案, 公投]
       negative_patterns: []
@@ -624,7 +624,7 @@ auto_publish:
   auto_approver: auto_approver_v1
   kill_switch_file: data/locks/auto_publish_disabled
   circuit_break_file: data/locks/auto_publish_circuit_open
-  manifest_dir: data/election_candidates/tainan_2026/auto_publish
+  manifest_dir: data/election_candidates/new_taipei_2026/auto_publish
   allowed_risk_levels: [low]
   allowed_relevance_labels: [direct_event]
   # 2026-09-03 决策：放宽 inferred_from_publication —— direct_event + 低风险 +

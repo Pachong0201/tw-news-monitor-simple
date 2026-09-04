@@ -1,9 +1,12 @@
 timezone: Asia/Taipei
 
 election:
-  election_id: tainan_mayoral_2026
-  display_name: 台南市长选举
-  report_label: 台南市长选情
+  election_id: new_taipei_mayoral_2026
+  display_name: 新北市长选举
+  report_label: 新北市长选情
+  region: 新北
+  system_name: 新北选情智能研判系统
+  file_prefix: 新北选情研判
 
 schedule:
   run_days:
@@ -17,13 +20,15 @@ schedule:
   timezone: Asia/Taipei
 
 paths:
-  database: data/election_context.db
-  events_seed: data/election_seed/tainan_2026/events.jsonl
-  sources_seed: data/election_seed/tainan_2026/sources.jsonl
-  initial_snapshot: data/election_seed/tainan_2026/initial_snapshot.json
-  snapshot_history: data/election_seed/tainan_2026/snapshot_history.jsonl
-  coverage_root: data/election_seed/tainan_2026
-  output_root: data/reports/tainan_2026/evidence_packages
+  database: data/election_context.new_taipei.db
+  events_seed: data/election_seed/new_taipei_2026/events.jsonl
+  sources_seed: data/election_seed/new_taipei_2026/sources.jsonl
+  initial_snapshot: data/election_seed/new_taipei_2026/initial_snapshot.json
+  snapshot_history: data/election_seed/new_taipei_2026/snapshot_history.jsonl
+  coverage_root: data/election_seed/new_taipei_2026
+  seed_root: data/election_seed/new_taipei_2026
+  assessment_runs_root: data/election_assessment/new_taipei_2026/production
+  output_root: data/reports/new_taipei_2026/evidence_packages
 
 evidence_pack:
   include_previous_snapshot: true
@@ -39,15 +44,37 @@ background:
   max_total: 15
   max_per_mainline: 10
   mainlines:
-    - key: chen_tingfei_integration
-      label: 陈亭妃整合
-      snapshot_field: dpp_integration
-    - key: hsieh_longchieh_organization
-      label: 谢龙介组织
-      snapshot_field: kmt_organization
-    - key: kmt_tpp_cooperation
-      label: 蓝白合作
-      snapshot_field: kmt_tpp_cooperation
+    - key: hou_administration
+      label: 侯友宜执政
+      snapshot_field: hou_administration
+    - key: kmt_succession
+      label: 国民党接班布局
+      snapshot_field: kmt_succession
+    - key: dpp_challenger
+      label: 民进党挑战者
+      snapshot_field: dpp_challenger
+
+# 研究包阵营章节（按新北实际选情定义；台南缺省用内置默认）
+research_pack:
+  camps:
+    - key: hou
+      label: 侯友宜阵营
+      keywords: [侯友宜]
+    - key: lee
+      label: 李四川阵营
+      keywords: [李四川, 川哥]
+    - key: su
+      label: 苏巧慧阵营
+      keywords: [苏巧慧, 巧慧]
+    - key: kmt_system
+      label: 国民党执政系统
+      keywords: [国民党, 蓝营, 洪孟楷, 刘和然]
+    - key: dpp_system
+      label: 民进党挑战体系
+      keywords: [民进党, 赖清德, 赖总统, 党中央, 总统府]
+    - key: tpp_system
+      label: 民众党与第三势力
+      keywords: [民众党, 黄国昌, 柯文哲, 白营]
 
 llm:
   default_provider: deepseek
@@ -127,7 +154,7 @@ report_generation:
     - final
     - draft_with_data_gap
   repair_invalid_output: true
-  output_root: data/reports/tainan_2026/generated_reports
+  output_root: data/reports/new_taipei_2026/generated_reports
   entity_whitelist:
     - 民进党
     - 国民党
@@ -139,7 +166,7 @@ report_generation:
 pipeline:
   version: 1.0.0
   lock_dir: data/locks
-  pipeline_runs_root: data/reports/tainan_2026/pipeline_runs
+  pipeline_runs_root: data/reports/new_taipei_2026/pipeline_runs
   default_run_time: "09:00"
   stale_lock_seconds: 3600
   retry:

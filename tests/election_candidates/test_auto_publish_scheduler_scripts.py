@@ -159,7 +159,7 @@ class TestAutoPublishRunnerScripts:
 
     def test_bat_uses_python_module_and_append_log(self):
         text = (PROJECT_ROOT / "run_auto_publish_candidates.bat").read_text(encoding="utf-8")
-        assert "app.election_candidates.auto_publish_candidates" in text
+        assert "app.election_candidates.auto_review_orchestrator" in text
         assert "--config config/election_candidate_pipeline.yaml" in text
         assert "auto_publish_candidates.log" in text
         assert ">>" in text  # 日志 append

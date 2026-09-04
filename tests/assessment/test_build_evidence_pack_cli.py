@@ -86,7 +86,8 @@ class TestCliIntegration:
         assert pack["report_period"]["period_start"] == "2026-07-16"
         assert pack["report_period"]["period_end"] == "2026-07-31"
         assert pack["data_status"]["active_snapshot_id"] == "tn_state_20260811_v2"
-        assert pack["data_status"]["facts_cutoff"] == "2026-08-11"
+        # facts_cutoff 随人工审核推进（>= 报告期末即可，不锁定历史值）
+        assert pack["data_status"]["facts_cutoff"] >= "2026-07-31"
         assert pack["data_status"]["poll_cutoff"] == "2026-03-12"
         assert pack["data_status"]["report_period_fully_covered_by_facts"] is True
         assert pack["data_status"]["uncovered_date_range"] == []

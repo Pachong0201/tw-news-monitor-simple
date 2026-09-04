@@ -58,7 +58,7 @@ class AutoPublishPolicy:
     manifest_dir: Path = Path("data/election_candidates/tainan_2026/auto_publish")
     allowed_risk_levels: tuple[str, ...] = ("low",)
     allowed_relevance_labels: tuple[str, ...] = ("direct_event",)
-    forbidden_event_date_basis: tuple[str, ...] = ("unknown", "inferred_from_publication")
+    forbidden_event_date_basis: tuple[str, ...] = ("unknown",)
     allowed_source_match_statuses: tuple[str, ...] = ("exact", "normalized_match")
     required_formal_duplicate_status: str = "no_match"
     required_validation_ready: bool = True
@@ -97,7 +97,7 @@ class AutoPublishPolicy:
                 str(x) for x in (raw.get("allowed_relevance_labels") or ("direct_event",))
             ),
             forbidden_event_date_basis=tuple(
-                str(x) for x in (raw.get("forbidden_event_date_basis") or ("unknown", "inferred_from_publication"))
+                str(x) for x in (raw.get("forbidden_event_date_basis") or ("unknown",))
             ),
             allowed_source_match_statuses=tuple(
                 str(x) for x in (raw.get("allowed_source_match_statuses") or ("exact", "normalized_match"))

@@ -33,7 +33,7 @@ class MockAdapter:
             out = self._valid(pack)
             body = out["structured"]["final_article"]["body"]
             out["structured"]["final_article"]["body"] = (
-                body + "\n\n另据报道，8月18日赖清德宣布改组台南市党部。"
+                body + "\n\n另据报道，12月18日赖清德宣布改组台南市党部。"
             )
             return out
         if fixture == "fabricated_poll":

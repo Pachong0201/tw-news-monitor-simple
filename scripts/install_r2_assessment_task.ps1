@@ -5,12 +5,21 @@
     [string]$RunTime = "09:00",
     [ValidateSet("NonInteractive", "Interactive")]
     [string]$LogonMode = "NonInteractive",
+    [ValidateSet("tainan", "new_taipei")]
+    [string]$Election = "tainan",
     [string]$ExportXmlOnly
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $PSScriptRoot
 $BatPath = Join-Path $ProjectDir "scripts\run_assessment_scheduled.bat"
+$taskName = "Tainan Election Assessment"
+$description = "台南选情研判 - 每月9日/22日 09:00 生成并进入人工终审（只生成，不自动发送）"
+if ($Election -eq "new_taipei") {
+    $BatPath = Join-Path $ProjectDir "scripts\run_assessment_scheduled_new_taipei.bat"
+    $taskName = "New Taipei Election Assessment"
+    $description = "新北选情研判 - 每月9日/22日 09:00 生成并进入人工终审（只生成，不自动发送）"
+}
 if (-not (Test-Path $BatPath)) { throw "Not found: $BatPath" }
 
 $timeParts = $RunTime -split ":"
@@ -20,7 +29,6 @@ if ($hour -lt 0 -or $hour -gt 23 -or $minute -lt 0 -or $minute -gt 59) {
     throw "RunTime 必须为合法 HH:mm"
 }
 
-$taskName = "Tainan Election Assessment"
 $userId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $startBoundary = (Get-Date -Hour $hour -Minute $minute -Second 0).ToString("yyyy-MM-ddTHH:mm:ss")
 $enabled = if ($Disable) { "false" } else { "true" }
@@ -37,7 +45,7 @@ if ($LogonMode -eq "Interactive") {
 $xmlUser = [System.Security.SecurityElement]::Escape($userId)
 $xmlProjectDir = [System.Security.SecurityElement]::Escape($ProjectDir)
 $xmlArguments = [System.Security.SecurityElement]::Escape('/d /c call "' + $BatPath + '"')
-$description = [System.Security.SecurityElement]::Escape("台南选情研判 - 每月9日/22日 09:00 生成并进入人工终审（只生成，不自动发送）")
+$description = [System.Security.SecurityElement]::Escape($description)
 
 $taskXml = @"
 <?xml version="1.0" encoding="UTF-16"?>

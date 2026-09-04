@@ -13,7 +13,12 @@ from typing import Any
 
 PROMPT_VERSION = "3.0"
 
-SYSTEM_PROMPT = """# ROLE
+# 台南默认上下文（向后兼容：不传参时生成与历史完全一致的 SYSTEM_PROMPT）。
+_DEFAULT_ELECTION_LABEL = "台南市长选情"
+_DEFAULT_REGION = "台南"
+_DEFAULT_CAMP_SAMPLE = "（陈亭妃/谢龙介/赖系与民进党地方系统/国民党/蓝白）"
+
+_SYSTEM_PROMPT_TAINAN = """# ROLE
 
 你是台湾地方政治与选举研究员，专精台南地方派系、政党机器、选举组织与政情研判。你的产出是内部政情研判材料，读者是熟悉台湾政治的专业人员。
 
@@ -109,11 +114,40 @@ Change Map（本期真正的新变化）→ Candidate Thesis（3—5个候选核
 analysis_plan 用于后台审计与历史连续性，final_article 是交付物。正文质量是第一优先级。"""
 
 
-def build_user_payload(pack: dict, previous_period_article: str | None = None) -> dict:
+def build_system_prompt(
+    *,
+    election_label: str = _DEFAULT_ELECTION_LABEL,
+    region: str = _DEFAULT_REGION,
+    camp_sample: str = _DEFAULT_CAMP_SAMPLE,
+) -> str:
+    """生成研判 SYSTEM_PROMPT。
+
+    台南默认参数生成与历史 SYSTEM_PROMPT 完全一致的字符串（向后兼容）；
+    新北等选举传入对应 label/region/camp 样本即可。
+    """
+    prompt = _SYSTEM_PROMPT_TAINAN
+    # 领域化替换（台南 → 目标选举）
+    prompt = prompt.replace(_DEFAULT_REGION, region)
+    prompt = prompt.replace(_DEFAULT_CAMP_SAMPLE, camp_sample)
+    prompt = prompt.replace("本期台南市长选情", f"本期{election_label}")
+    # 标题禁词示例随 region 变化（region 替换已覆盖“台南市长选情分析”前缀，
+    # 但保留对 election_label 的二次替换以防顺序问题）
+    return prompt
+
+
+SYSTEM_PROMPT = build_system_prompt()
+
+
+def build_user_payload(
+    pack: dict,
+    previous_period_article: str | None = None,
+    *,
+    election_label: str = _DEFAULT_ELECTION_LABEL,
+) -> dict:
     """构造模型用户输入：研究包 + 任务指令 + 少量运行说明。"""
     payload: dict[str, Any] = {
         "task": (
-            "请基于 research_pack 撰写本期台南市长选情研判。"
+            f"请基于 research_pack 撰写本期{election_label}研判。"
             "先按内部流程完成变化识别、核心判断、因果链、权力关系与趋势推演，"
             "再输出 analysis_plan 与 final_article。"
         ),

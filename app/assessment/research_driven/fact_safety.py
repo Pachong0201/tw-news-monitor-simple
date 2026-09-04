@@ -193,8 +193,19 @@ def _article_dates(article: str) -> list[tuple[str, str]]:
     return out
 
 
-def run_fact_safety_check(article: str, title: str, pack: dict, period_end: str) -> dict:
-    """执行事实安全检查。返回 audit 字典（status: pass|hard_block）。"""
+def run_fact_safety_check(
+    article: str,
+    title: str,
+    pack: dict,
+    period_end: str,
+    *,
+    region_terms: tuple[str, ...] | None = None,
+) -> dict:
+    """执行事实安全检查。返回 audit 字典（status: pass|hard_block）。
+
+    region_terms 用于标题无判断范式的地区化检查（默认台南）；
+    新北等选举传入对应地区词。
+    """
     hard_block_reasons: list[str] = []
     review_notes: list[str] = []
     checks: dict[str, Any] = {}
@@ -283,7 +294,14 @@ def run_fact_safety_check(article: str, title: str, pack: dict, period_end: str)
         review_notes.append(f"疑似人名（研究包人物集合之外，请人工确认无人物错认）：{'、'.join(unknown_persons[:6])}")
 
     # 4) 标题范式
-    forbidden_title = [p for p in FORBIDDEN_TITLE_PATTERNS if p in title]
+    regions = region_terms or ("台南",)
+    title_patterns = list(FORBIDDEN_TITLE_PATTERNS)
+    for region in regions:
+        title_patterns.append(f"{region}市长选情分析")
+        title_patterns.append(f"{region}选情最新进展")
+        title_patterns.append(f"{region}选举情况综述")
+    title_patterns = list(dict.fromkeys(p for p in title_patterns if p))
+    forbidden_title = [p for p in title_patterns if p in title]
     checks["forbidden_title_patterns"] = forbidden_title
     if forbidden_title:
         review_notes.append(f"标题疑似无判断范式（{forbidden_title[0]}），请改为判断型标题。")

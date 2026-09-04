@@ -142,7 +142,7 @@ def test_formal_unchanged():
         'links': conn.execute('SELECT COUNT(*) FROM event_sources').fetchone()[0],
     }
     conn.close()
-    assert c == {'events': 42, 'sources': 113, 'links': 102}
+    assert c == {'events': 48, 'sources': 113, 'links': 108}
 
 # ─── 18. rec_012 enriches existing fundraiser ───
 def test_rec012_enrich_fundraiser():

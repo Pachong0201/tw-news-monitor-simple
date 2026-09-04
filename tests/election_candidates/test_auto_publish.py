@@ -165,7 +165,7 @@ def test_direct_statement_rejected(tmp_path):
     assert result["rejected"] == 1
 
 
-@pytest.mark.parametrize("basis", ["unknown", "inferred_from_publication"])
+@pytest.mark.parametrize("basis", ["unknown"])
 def test_non_explicit_date_rejected(tmp_path, basis):
     config = make_auto_config(tmp_path)
     repo = open_candidate_repo(config)
@@ -177,6 +177,21 @@ def test_non_explicit_date_rejected(tmp_path, basis):
     assert result["rejected"] == 1
     rejected = [c for c in result["candidates"] if c["decision"] == "rejected"][0]
     assert any("date_explicit" in r for r in rejected["reasons"])
+
+
+def test_inferred_date_accepted_when_policy_allows(tmp_path):
+    """2026-09-03 决策：direct_event + 低风险 + 有 observed_fact 的候选，其日期
+    为 inferred_from_publication 时允许自动发布（router 已挡 date_unknown）。"""
+    config = make_auto_config(tmp_path)
+    repo = open_candidate_repo(config)
+    seed_eligible(repo, event_date_basis="inferred_from_publication",
+                  event_date_confidence="low", date_flagged_inferred=1)
+    repo.close()
+
+    result = run(config)
+    assert result["status"] == "completed"
+    assert result["published"] == 1
+    assert result["rejected"] == 0
 
 
 def test_unknown_event_type_rejected(tmp_path):
@@ -567,6 +582,6 @@ def test_policy_defaults_from_config(tmp_path):
     assert policy.auto_approver == "auto_approver_v1"
     assert policy.allowed_risk_levels == ("low",)
     assert policy.allowed_relevance_labels == ("direct_event",)
-    assert policy.forbidden_event_date_basis == ("unknown", "inferred_from_publication")
+    assert policy.forbidden_event_date_basis == ("unknown",)
     assert policy.allowed_source_match_statuses == ("exact", "normalized_match")
     assert policy.required_formal_duplicate_status == "no_match"
