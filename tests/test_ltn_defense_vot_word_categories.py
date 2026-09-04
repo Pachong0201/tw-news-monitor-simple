@@ -501,7 +501,10 @@ def test_word_renders_new_media_sections_in_production_order_with_same_style(tmp
     output = build_word_digest(items, tmp_path, generated_at=now)
     doc = Document(output)
     texts = [p.text for p in doc.paragraphs]
-    headings = ["（一）政治新闻", "（二）经济新闻", "（三）军武", "（四）国际新闻", "（五）宗教"]
+    headings = [
+        "一、政治新闻", "二、经济新闻", "三、军武动态",
+        "四、国际及两岸新闻", "五、宗教",
+    ]
     indices = [texts.index(text) for text in headings]
     assert indices == sorted(indices)
     styles = [doc.paragraphs[texts.index(text)].style.style_id for text in headings]
@@ -517,9 +520,9 @@ def test_word_section_numbering_remains_contiguous_when_categories_are_empty(tmp
     ]
     output = build_word_digest(items, tmp_path, generated_at=now)
     texts = [p.text for p in Document(output).paragraphs]
-    assert "（一）政治新闻" in texts
-    assert "（二）国际新闻" in texts
-    assert "（三）宗教" in texts
+    assert "一、政治新闻" in texts
+    assert "二、国际及两岸新闻" in texts
+    assert "三、宗教" in texts
     assert not any("军武" in text for text in texts)
 
 
@@ -550,7 +553,7 @@ def test_official_military_article_stays_in_official_source_section(tmp_path):
     output = build_word_digest([official, media], tmp_path, generated_at=now)
     texts = [p.text for p in Document(output).paragraphs]
 
-    assert texts.index("一、官方信源") < texts.index("二、新闻媒体")
-    assert texts.index("一）台湾国防部") < texts.index("二、新闻媒体")
+    assert texts.index("一、官方信源") < texts.index("二、军武动态")
+    assert texts.index("一）台湾国防部") < texts.index("二、军武动态")
     assert sum("国防部军事新闻" in text for text in texts) == 1
     assert sum("媒体军武新闻" in text for text in texts) == 1

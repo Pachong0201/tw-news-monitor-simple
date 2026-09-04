@@ -217,8 +217,8 @@ class TestWordInternational:
         def _has(sub):  # docx 段落文本含 “1. ” 等索引前缀，需子串匹配
             return any(sub in t for t in texts)
 
-        # 国际媒体栏目（全部分类小节在场 -> 编号接续为（六））
-        assert "（六）国际媒体" in texts
+        # 国际媒体栏目（全部分类栏目在场 -> 一级编号接续为六）
+        assert "六、国际媒体" in texts
         # 英文标题原样输出，不做翻译
         assert _has("China launches drills near Taiwan")
         assert _has("China unveils new chip export controls targeting Taiwan")
@@ -236,20 +236,20 @@ class TestWordInternational:
         idx_r1 = next(i for i, t in enumerate(texts) if "China launches drills near Taiwan" in t)
         assert idx_r4 < idx_r1
         # 原栏目未破坏
-        assert "（一）政治新闻" in texts
-        assert "（二）经济新闻" in texts
-        assert "（三）军武" in texts
-        assert "（四）国际新闻" in texts
-        assert "（五）宗教" in texts
+        assert "一、政治新闻" in texts
+        assert "二、经济新闻" in texts
+        assert "三、军武动态" in texts
+        assert "四、国际及两岸新闻" in texts
+        assert "五、宗教" in texts
         # 国内“（四）国际新闻”与“国际媒体”无重复：
         # 国际媒体文章只出现一次且位于国际媒体栏目内；（四）内只有国内国际新闻
         assert sum("China launches drills near Taiwan" in t for t in texts) == 1
         assert sum("美国大选初选观察：摇摆州民调胶着" in t for t in texts) == 1
-        intl_cat_idx = texts.index("（四）国际新闻")
-        rel_idx = texts.index("（五）宗教")
+        intl_cat_idx = texts.index("四、国际及两岸新闻")
+        rel_idx = texts.index("五、宗教")
         between = texts[intl_cat_idx:rel_idx]
         assert not any("China" in t for t in between)
-        intl_sec_idx = texts.index("（六）国际媒体")
+        intl_sec_idx = texts.index("六、国际媒体")
         r1_idx = next(i for i, t in enumerate(texts) if "China launches drills near Taiwan" in t)
         assert intl_sec_idx < r1_idx
 
@@ -259,7 +259,7 @@ class TestWordInternational:
         d2 = make_article("美国大选初选观察", "联合报", "d2", category="international")
         output = build_word_digest([r1, d2], tmp_path, generated_at=BASE)
         texts = [p.text for p in Document(output).paragraphs]
-        assert "（一）国际新闻" in texts
+        assert "一、国际及两岸新闻" in texts
         assert any("China launches drills near Taiwan" in t for t in texts)
         assert any("来源：Reuters" in t for t in texts)  # 旧样式：直接英文来源名
         assert not any("国际媒体" in t and "来源" not in t for t in texts)

@@ -64,8 +64,8 @@ def test_case1_no_election_no_section():
         make("台股收盘上涨", category="economy"),
     ])
     assert not has_election_section(texts)
-    # 且原有一级编号不受影响（媒体为"二、新闻媒体"？无官方时媒体为"一、新闻媒体"）
-    assert any("新闻媒体" in t for t in texts)
+    # 普通分类直接作为动态一级栏目。
+    assert any("一、政治新闻" in t for t in texts)
     assert not any("九合一" in t for t in texts)
 
 
@@ -173,7 +173,7 @@ def test_case8_no_politics_duplication():
     assert any("立法院审查总预算" in t for t in texts[i_pol:])
 
 
-# Case 9：动态编号连续无跳号（一级：官方/九合一/媒体；二级（一）（二））
+# Case 9：动态编号连续无跳号（一级：官方/九合一/政治）
 def test_case9_numbering_contiguous():
     texts = render([
         make("台湾总统府发布新闻", official=True, url="https://gov/1"),
@@ -183,8 +183,8 @@ def test_case9_numbering_contiguous():
     ])
     i_official = next(i for i, t in enumerate(texts) if "一、官方信源" in t)
     i_election = next(i for i, t in enumerate(texts) if "二、九合一选举" in t)
-    i_media = next(i for i, t in enumerate(texts) if "三、新闻媒体" in t)
-    assert i_official < i_election < i_media
+    i_politics = next(i for i, t in enumerate(texts) if "三、政治新闻" in t)
+    assert i_official < i_election < i_politics
 
 
 # Case 10：XML 特殊字符 & < > 及 URL 中的 & 不回归

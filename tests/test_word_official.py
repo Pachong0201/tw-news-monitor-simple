@@ -41,7 +41,7 @@ class TestWordOfficialAdvanced:
         d = build_word_digest(arts, Path(tempfile.mkdtemp()), now)
         texts = [p.text for p in Document(str(d)).paragraphs]
         o_idx = next(i for i,t in enumerate(texts) if "一、官方信源" in t)
-        m_idx = next(i for i,t in enumerate(texts) if "二、新闻媒体" in t)
+        m_idx = next(i for i,t in enumerate(texts) if "二、政治新闻" in t)
         assert o_idx < m_idx
 
     def test_counts_correct(self):

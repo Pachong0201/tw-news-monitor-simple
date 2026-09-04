@@ -24,8 +24,8 @@ from .election2026.models import ElectionAnnotation
 CATEGORY_NAMES = {
     "politics": "政治新闻",
     "economy": "经济新闻",
-    "military": "军武",
-    "international": "国际新闻",
+    "military": "军武动态",
+    "international": "国际及两岸新闻",
     "religion": "宗教",
 }
 CATEGORY_ORDER = ["politics", "economy", "military", "international", "religion"]
@@ -44,6 +44,7 @@ def build_word_digest(
     election_config: dict | None = None,
     election_entities: dict | None = None,
     election_annotations: dict[str, ElectionAnnotation] | None = None,
+    military_topic_urls: set[str] | None = None,
 ) -> Path:
     if not articles:
         raise ValueError("No articles to generate Word digest")
@@ -54,7 +55,12 @@ def build_word_digest(
         catch_up_urls = set()
     fresh_count = len([a for a in articles if a.url not in catch_up_urls])
     catch_up_count = len([a for a in articles if a.url in catch_up_urls])
-    official_articles = [a for a in articles if is_official_source(a.source_id)]
+    military_topic_urls = set(military_topic_urls or set())
+    military_articles = [a for a in articles if a.url in military_topic_urls]
+    official_articles = [
+        a for a in articles
+        if is_official_source(a.source_id) and a.url not in military_topic_urls
+    ]
     media_articles = [a for a in articles if not is_official_source(a.source_id)]
     total = len(articles)
     official_count = len(official_articles)
@@ -63,18 +69,26 @@ def build_word_digest(
     # 国际媒体层 Phase I：启用配置时，国际媒体文章只进“国际媒体”二级栏目，
     # 不再进入（一）~（五）分类小节；国内“国际新闻”类文章仍进（四）国际新闻。
     intl_enabled = bool(international_config and international_config.get("enabled", False))
+    regular_media_articles = [
+        a for a in media_articles if a.url not in military_topic_urls
+    ]
     if intl_enabled:
         intl_media_articles = [
-            a for a in media_articles
+            a for a in regular_media_articles
             if is_international_media(a.source_name, international_config)
         ]
         domestic_media_articles = [
+            a for a in regular_media_articles
+            if not is_international_media(a.source_name, international_config)
+        ]
+        election_candidate_articles = [
             a for a in media_articles
             if not is_international_media(a.source_name, international_config)
         ]
     else:
         intl_media_articles = []
-        domestic_media_articles = media_articles
+        domestic_media_articles = regular_media_articles
+        election_candidate_articles = media_articles
 
     # 九合一选举专题：启用配置时，从国内媒体稿中摘出九合一新闻，
     # 其余仍进（一）~（五）分类小节（互斥路由：九合一稿不再出现在政治新闻栏）。
@@ -82,7 +96,7 @@ def build_word_digest(
     election_articles: list[Article] = []
     if election_enabled:
         election_articles = [
-            a for a in domestic_media_articles
+            a for a in election_candidate_articles
             if _is_election_article(a, election_config, election_entities, election_annotations)
         ]
         election_urls = {a.url for a in election_articles}
@@ -90,6 +104,16 @@ def build_word_digest(
             a for a in domestic_media_articles
             if a.url not in election_urls
         ]
+
+    highlighted_articles: list[Article] = []
+    highlighted_urls: set[str] = set()
+    for article, result in importance_results or []:
+        if result.level not in {"critical", "important"}:
+            continue
+        if article.url in highlighted_urls:
+            continue
+        highlighted_urls.add(article.url)
+        highlighted_articles.append(article)
     
     doc = Document()
     section = doc.sections[0]
@@ -145,7 +169,7 @@ def build_word_digest(
     
     if official_articles:
         heading_num += 1
-        doc.add_heading(f"{'一二三四五六七八九十'[heading_num-1]}、官方信源", level=1)
+        doc.add_heading(f"{_primary_num(heading_num)}、官方信源", level=1)
         official_by_source: dict[str, list[Article]] = {}
         for a in official_articles:
             official_by_source.setdefault(a.source_id, []).append(a)
@@ -206,12 +230,21 @@ def build_word_digest(
                 p = doc.add_paragraph()
                 _add_hyperlink(p, article.url, article.url)
                 doc.add_paragraph()
+
+    if highlighted_articles:
+        heading_num += 1
+        doc.add_heading(f"{_primary_num(heading_num)}、重点提示", level=1)
+        for idx, article in enumerate(highlighted_articles, 1):
+            _render_media_item(
+                doc, article, idx, catch_up_urls,
+                importance_results, prefix_note="",
+            )
     
     # 九合一选举专题一级栏目：位于官方信源之后、新闻媒体之前。
     # 空则整栏隐藏；二级分栏（全局动向/县市）动态生成、动态编号。
     if election_articles:
         heading_num += 1
-        doc.add_heading(f"{'一二三四五六七八九十'[heading_num-1]}、九合一选举", level=1)
+        doc.add_heading(f"{_primary_num(heading_num)}、九合一选举", level=1)
         election_groups = _group_election_articles(
             election_articles, election_config, election_entities,
             election_annotations, importance_results,
@@ -223,10 +256,24 @@ def build_word_digest(
                     doc, article, idx, catch_up_urls,
                     importance_results, prefix_note="",
                 )
+
+    if military_articles:
+        heading_num += 1
+        doc.add_heading(f"{_primary_num(heading_num)}、军武动态", level=1)
+        military_articles.sort(
+            key=lambda x: (
+                x.published_at.timestamp() if x.published_at else 0,
+                x.position,
+            ),
+            reverse=True,
+        )
+        for idx, article in enumerate(military_articles, 1):
+            _render_media_item(
+                doc, article, idx, catch_up_urls,
+                importance_results, prefix_note="",
+            )
     
     if media_articles:
-        heading_num += 1
-        doc.add_heading(f"{'一二三四五六七八九十'[heading_num-1]}、新闻媒体", level=1)
         grouped: dict[str, list[Article]] = {}
         for cat in CATEGORY_ORDER:
             grouped[cat] = []
@@ -236,15 +283,15 @@ def build_word_digest(
         for cat_arts in grouped.values():
             cat_arts.sort(key=lambda x: (x.published_at.timestamp() if x.published_at else 0, x.position), reverse=True)
         
-        cat_index = 0
         for cat in CATEGORY_ORDER:
             cat_articles = grouped.get(cat, [])
             if not cat_articles:
                 continue
             cat_name = CATEGORY_NAMES.get(cat, cat)
-            num = CATEGORY_NUMBERS[cat_index]
-            cat_index += 1
-            doc.add_heading(f"{num}{cat_name}", level=2)
+            heading_num += 1
+            doc.add_heading(
+                f"{_primary_num(heading_num)}、{cat_name}", level=1
+            )
             for idx, article in enumerate(cat_articles, 1):
                 p = doc.add_paragraph()
                 if importance_results:
@@ -292,11 +339,10 @@ def build_word_digest(
         # 国际媒体二级栏目（Phase I）：位于分类小节之后，编号接续现有分类小节。
             # 仅当 international_config 启用时渲染；栏目内按重要性、发布时间排序。
         if intl_media_articles:
-            if cat_index < len(CATEGORY_NUMBERS):
-                intl_num = CATEGORY_NUMBERS[cat_index]
-            else:
-                intl_num = f"（{'一二三四五六七八九十'[cat_index]}）"
-            doc.add_heading(f"{intl_num}国际媒体", level=2)
+            heading_num += 1
+            doc.add_heading(
+                f"{_primary_num(heading_num)}、国际媒体", level=1
+            )
             def _importance_order(article: Article) -> int:
                 if importance_results:
                     result = next((r for a, r in importance_results if a is article), None)
@@ -449,6 +495,14 @@ def build_word_digest(
     doc.save(str(output_path))
     _normalise_docx_package(output_path)
     return output_path
+
+
+def _primary_num(index: int) -> str:
+    """Return a safe primary-section label without a fixed section limit."""
+    hanzi = "一二三四五六七八九十"
+    if 1 <= index <= 10:
+        return hanzi[index - 1]
+    return str(index)
 
 
 def _subsection_num(index: int) -> str:

@@ -331,6 +331,17 @@ def _classify_and_persist_election2026(
         return {}
 
 
+def _get_topic_urls_safe(articles, db, topic: str) -> set[str]:
+    """Read persisted topic URLs without allowing metadata to block Word."""
+    if db is None or not articles:
+        return set()
+    try:
+        return db.get_topic_urls([article.url for article in articles], topic)
+    except Exception as exc:  # noqa: BLE001 - optional section must fail safely
+        logger.warning("Topic lookup failed safely for %s: %s", topic, exc)
+        return set()
+
+
 class _PrecomputedTranslationLookup:
     """Metadata-only translator view for event notification rendering.
 
@@ -1101,7 +1112,12 @@ def main() -> None:
             return
         output_dir = project_root / "data" / "reports"
         enrich_summaries_safe(articles, db)
-        output_path = build_word_digest(articles, output_dir, generated_at=now)
+        output_path = build_word_digest(
+            articles,
+            output_dir,
+            generated_at=now,
+            military_topic_urls=_get_topic_urls_safe(articles, db, "military"),
+        )
         test_name = f"\u53f0\u6e7e\u65b0\u95fb\u76d1\u6d4b_\u6d4b\u8bd5_{now.strftime('%Y-%m-%d_%H%M')}.docx"
         test_path = output_path.parent / test_name
         if test_path.exists():
@@ -1263,6 +1279,9 @@ def main() -> None:
                     election_config=election2026_config,
                     election_entities=election2026_entities,
                     election_annotations=election_annotations,
+                    military_topic_urls=_get_topic_urls_safe(
+                        digest_articles, db, "military"
+                    ),
                 )
                 print(f"Dry-run Word：{word_path}")
         finally:
@@ -1366,6 +1385,9 @@ def main() -> None:
             election_config=election2026_config,
             election_entities=election2026_entities,
             election_annotations=election_annotations,
+            military_topic_urls=_get_topic_urls_safe(
+                word_articles, db, "military"
+            ),
         )
         print(f"Word简报已生成：\n{output_path}")
         logger.info("Word export complete: %s", output_path)
@@ -1484,6 +1506,9 @@ def main() -> None:
                 catch_up_urls=all_catch_up,
                 election_config=election2026_config,
                 election_entities=election2026_entities,
+                military_topic_urls=_get_topic_urls_safe(
+                    articles, db, "military"
+                ),
             )
             print(f"Word generated: {word_path}")
 
@@ -1723,6 +1748,9 @@ def main() -> None:
                     election_config=election2026_config,
                     election_entities=election2026_entities,
                     election_annotations=election_annotations,
+                    military_topic_urls=_get_topic_urls_safe(
+                        digest_articles, db, "military"
+                    ),
                 )
                 logger.info("Word digest saved: %s", word_path)
                 # Auto-send to Feishu if credentials are available
