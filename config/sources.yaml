@@ -95,12 +95,64 @@ sources:
   name: 自由時報
   type: ltn_rss
   url: https://news.ltn.com.tw/rss/world.xml
-- default_category: military
+- category: military
   enabled: true
   id: ltn_defense
   name: 自由时报·军武
-  type: ltn_rss
-  url: https://news.ltn.com.tw/rss/def.xml
+  type: ltn_military
+  topic: military
+  military_source_type: commercial_military
+  url: https://def.ltn.com.tw/breakingnewslist
+- category: military
+  enabled: true
+  id: udn_military
+  name: 联合新闻网·军事
+  type: udn
+  topic: military
+  military_source_type: commercial_military
+  url: https://udn.com/news/cate/2/6638sub_122173
+- category: military
+  enabled: true
+  id: nownews_military
+  name: NOWnews·军武战情
+  type: nownews_military
+  topic: military
+  military_source_type: commercial_military
+  max_pages: 3
+  stop_after_hours: 72
+  url: https://www.nownews.com/cat/news-summary/military/
+- category: military
+  enabled: true
+  id: ydn_defense_focus
+  name: 青年日报·国防焦点
+  type: rss
+  topic: military
+  military_source_type: official_military
+  url: https://www.ydn.com.tw/tw/Home/RSS.aspx?CID=9
+- category: military
+  enabled: true
+  id: ydn_weapons_tour
+  name: 青年日报·武备巡礼
+  type: rss
+  topic: military
+  military_source_type: official_military
+  url: https://www.ydn.com.tw/tw/Home/RSS.aspx?CID=11
+- category: military
+  enabled: true
+  id: ydn_military_world
+  name: 青年日报·军视界
+  type: rss
+  topic: military
+  military_source_type: official_military
+  url: https://www.ydn.com.tw/tw/Home/RSS.aspx?CID=26
+- category: military
+  enabled: true
+  id: mna_military
+  name: 国防部军事新闻通讯社
+  type: mna_military
+  topic: military
+  military_source_type: official_military
+  url: https://mna.mnd.gov.tw/news/overview/
 - category: politics
   enabled: true
   id: newtalk_politics

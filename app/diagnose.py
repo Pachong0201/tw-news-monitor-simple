@@ -8,7 +8,14 @@ from datetime import datetime
 from .time_utils import TAIPEI
 from pathlib import Path
 
-from .collectors import RSSCollector, UDNCollector, EBCCollector
+from .collectors import (
+    EBCCollector,
+    LtnMilitaryCollector,
+    MNAMilitaryCollector,
+    NownewsMilitaryCollector,
+    RSSCollector,
+    UDNCollector,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +23,9 @@ COLLECTOR_MAP = {
     "rss": RSSCollector,
     "udn": UDNCollector,
     "ebc": EBCCollector,
+    "ltn_military": LtnMilitaryCollector,
+    "nownews_military": NownewsMilitaryCollector,
+    "mna_military": MNAMilitaryCollector,
 }
 
 CSV_FIELDS = [

@@ -100,12 +100,14 @@ def test_production_sources_enable_ltn_defense_and_content_classified_vot():
 
     ltn = sources["ltn_defense"]
     assert ltn == {
-        "default_category": "military",
+        "category": "military",
         "enabled": True,
         "id": "ltn_defense",
         "name": "自由时报·军武",
-        "type": "ltn_rss",
-        "url": "https://news.ltn.com.tw/rss/def.xml",
+        "type": "ltn_military",
+        "topic": "military",
+        "military_source_type": "commercial_military",
+        "url": "https://def.ltn.com.tw/breakingnewslist",
     }
 
     vot = sources["voice_of_tibet_cn"]

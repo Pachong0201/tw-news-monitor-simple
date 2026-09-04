@@ -11,6 +11,7 @@ from .ft_alphaville import FTAlphavilleCollector
 from .wsj import WSJRSSCollector
 from .wsj_newsletter import WSJNewsletterCollector
 from .bloomberg_newsletter import BloombergNewsletterCollector
+from .military import LtnMilitaryCollector, NownewsMilitaryCollector, MNAMilitaryCollector
 
 
 __all__ = [
@@ -27,4 +28,7 @@ __all__ = [
     "WSJRSSCollector",
     "WSJNewsletterCollector",
     "BloombergNewsletterCollector",
+    "LtnMilitaryCollector",
+    "NownewsMilitaryCollector",
+    "MNAMilitaryCollector",
 ]

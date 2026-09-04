@@ -12,7 +12,7 @@ import json
 
 import yaml
 
-from .collectors import RSSCollector, UDNCollector, EBCCollector, CNAHtmlCollector, LtnRSSCollector, PresidentCollector, ZaobaoCollector, ReutersCollector, FTAlphavilleCollector, WSJRSSCollector, WSJNewsletterCollector, BloombergNewsletterCollector
+from .collectors import RSSCollector, UDNCollector, EBCCollector, CNAHtmlCollector, LtnRSSCollector, PresidentCollector, ZaobaoCollector, ReutersCollector, FTAlphavilleCollector, WSJRSSCollector, WSJNewsletterCollector, BloombergNewsletterCollector, LtnMilitaryCollector, NownewsMilitaryCollector, MNAMilitaryCollector
 from .category_classifier import apply_content_classification
 from .content_filter import load_content_filter, filter_articles
 from .database import Database
@@ -71,6 +71,9 @@ COLLECTOR_MAP = {
     "wsj_rss": WSJRSSCollector,
     "wsj_newsletter": WSJNewsletterCollector,
     "bloomberg_newsletter": BloombergNewsletterCollector,
+    "ltn_military": LtnMilitaryCollector,
+    "nownews_military": NownewsMilitaryCollector,
+    "mna_military": MNAMilitaryCollector,
 }
 
 _INTERNATIONAL_SOURCE_TYPES = {
