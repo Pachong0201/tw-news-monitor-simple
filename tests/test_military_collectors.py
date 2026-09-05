@@ -131,6 +131,55 @@ def test_nownews_paginates_and_stops_at_old_article(monkeypatch):
     assert collector.last_outcome.item_count == 3
 
 
+def test_nownews_valid_stale_page_is_healthy_empty_result(monkeypatch):
+    url = "https://www.nownews.com/cat/news-summary/military/"
+    cfg = source("nownews_military", url, "nownews_military")
+    cfg.update({"max_pages": 3, "stop_after_hours": 72})
+    client = FakeClient({url: fixture("nownews_base.html")})
+    collector = NownewsMilitaryCollector(cfg)
+    collector._client = client
+    monkeypatch.setattr(
+        "app.collectors.military._now_taipei",
+        lambda: datetime(2026, 9, 10, 12, 0, tzinfo=TAIPEI),
+    )
+
+    assert collector.collect() == []
+    assert client.calls == [url]
+    assert collector.last_outcome.schema_valid is True
+    assert collector.last_outcome.error_code is None
+
+
+def test_nownews_collects_stable_banner_cards_before_stale_list(monkeypatch):
+    url = "https://www.nownews.com/cat/news-summary/military/"
+    html = """
+    <html><body>
+      <div class="card"><div class="item">
+        <a href="https://www.nownews.com/news/9001" data-sec="banner_news"
+           aria-label="首批无人机抵台"><h2 class="title">首批无人机抵台</h2></a>
+      </div></div>
+      <ul id="ulNewsList" class="list-wrap"><li class="item">
+        <a href="https://www.nownews.com/news/8001">
+          <h3 class="title">旧军演新闻</h3>
+          <time datetime="2026-06-01 10:00">2026-06-01 10:00</time>
+        </a>
+      </li></ul>
+    </body></html>
+    """
+    cfg = source("nownews_military", url, "nownews_military")
+    cfg.update({"max_pages": 3, "stop_after_hours": 72})
+    collector = NownewsMilitaryCollector(cfg)
+    collector._client = FakeClient({url: html})
+    monkeypatch.setattr(
+        "app.collectors.military._now_taipei",
+        lambda: datetime(2026, 9, 10, 12, 0, tzinfo=TAIPEI),
+    )
+
+    articles = collector.collect()
+    assert [article.title for article in articles] == ["首批无人机抵台"]
+    assert articles[0].published_at is None
+    assert collector.last_outcome.schema_valid is True
+
+
 @pytest.mark.parametrize(
     ("fixture_name", "source_id"),
     [

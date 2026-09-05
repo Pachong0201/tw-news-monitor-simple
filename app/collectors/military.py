@@ -165,6 +165,28 @@ class NownewsMilitaryCollector(BaseCollector):
         if list_node is None:
             return [], False
         parsed: list[Article] = []
+        for anchor in soup.select('a[data-sec="banner_news"][href]'):
+            href = urljoin(self.url, anchor.get("href", "").strip())
+            if not NOWNEWS_ARTICLE_RE.match(href):
+                continue
+            title_node = anchor.select_one("h2.title")
+            title = (
+                title_node.get_text(" ", strip=True)
+                if title_node is not None
+                else str(anchor.get("aria-label") or "").strip()
+            )
+            if not title:
+                continue
+            parsed.append(
+                _article(
+                    self,
+                    title=title,
+                    url=href,
+                    published_at=None,
+                    fetched_at=fetched_at,
+                    position=0,
+                )
+            )
         for item in list_node.select("li.item"):
             anchor = item.find("a", href=True)
             if anchor is None:
@@ -239,7 +261,7 @@ class NownewsMilitaryCollector(BaseCollector):
             if reached_old or len(articles) >= self.MAX_ITEMS or not page_articles:
                 break
 
-        valid = first_schema_valid and bool(articles)
+        valid = first_schema_valid
         self.mark_outcome(
             http_status=first_status,
             schema_valid=valid,
