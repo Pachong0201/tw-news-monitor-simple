@@ -12,6 +12,8 @@ dist/
 venv/
 .venv/
 .venv-*/
+.python-runtime/
+.uv-bootstrap-cache/
 deployment/
 validation/
 

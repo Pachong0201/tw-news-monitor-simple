@@ -45,6 +45,7 @@ def build_word_digest(
     election_entities: dict | None = None,
     election_annotations: dict[str, ElectionAnnotation] | None = None,
     military_topic_urls: set[str] | None = None,
+    military_event_config: dict | None = None,
 ) -> Path:
     if not articles:
         raise ValueError("No articles to generate Word digest")
@@ -56,19 +57,106 @@ def build_word_digest(
     fresh_count = len([a for a in articles if a.url not in catch_up_urls])
     catch_up_count = len([a for a in articles if a.url in catch_up_urls])
     military_topic_urls = set(military_topic_urls or set())
-    military_articles = [a for a in articles if a.url in military_topic_urls]
-    official_articles = [
-        a for a in articles
-        if is_official_source(a.source_id) and a.url not in military_topic_urls
-    ]
+    military_events = []
+    event_urls: set[str] = set()
+    event_rules: dict | None = None
+    # Optional event presentation only; collection, stored topics and importance
+    # stay intact. Event construction is deferred until election URLs are known so
+    # an election article cannot be re-added through this second military route.
+    try:
+        from .military.config import load_rules, validate_rules
+
+        event_rules = military_event_config
+        if event_rules is None:
+            event_rules = load_rules(os.getenv("MILITARY_RULES_PATH") or None)
+        if event_rules.get("word_enabled", False):
+            validate_rules(event_rules)
+        else:
+            event_rules = None
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Military event presentation failed; retaining legacy routing: %s", exc)
+        event_rules = None
+
     media_articles = [a for a in articles if not is_official_source(a.source_id)]
     total = len(articles)
-    official_count = len(official_articles)
     media_count = len(media_articles)
 
     # 国际媒体层 Phase I：启用配置时，国际媒体文章只进“国际媒体”二级栏目，
     # 不再进入（一）~（五）分类小节；国内“国际新闻”类文章仍进（四）国际新闻。
     intl_enabled = bool(international_config and international_config.get("enabled", False))
+    if intl_enabled:
+        election_candidate_articles = [
+            a for a in media_articles
+            if not is_international_media(a.source_name, international_config)
+        ]
+    else:
+        election_candidate_articles = media_articles
+
+    # 九合一选举专题：启用配置时，从国内媒体稿中摘出九合一新闻，
+    # 其余仍进（一）~（五）分类小节。专题展示采用 election-first 互斥路由：
+    # 九合一稿不再进入普通分类、军武文章或军武事件；双 topic 仍保留在数据库。
+    election_enabled = bool(election_config and election_config.get("enabled", False))
+    election_articles: list[Article] = []
+    election_urls: set[str] = set()
+    if election_enabled:
+        election_articles = [
+            a for a in election_candidate_articles
+            if _is_election_article(a, election_config, election_entities, election_annotations)
+        ]
+        election_urls = {a.url for a in election_articles}
+
+    if event_rules is not None:
+        try:
+            from .military import is_military_source_article
+            from .military.events import build_events
+
+            # 军武栏只收录军武来源新闻：events 分类只对来源白名单内的文章生效，
+            # 普通政治/经济频道的军武标题稿不再进入军武事件。
+            military_events = build_events(
+                [a for a in articles if a.url not in election_urls
+                 and is_military_source_article(a)],
+                event_rules,
+            )
+            event_urls = {
+                row["url"]
+                for event in military_events
+                for row in event["articles"]
+            }
+            military_topic_urls.update(event_urls)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Military event presentation failed; retaining legacy routing: %s",
+                exc,
+            )
+            military_events = []
+            event_urls = set()
+
+    military_topic_urls.difference_update(election_urls)
+    # 白名单兜底：陈旧/污染的 topic 记录（非军武来源 URL）不进入军武栏，
+    # 被剔除的文章自然回到其原有分类栏目，不会从简报中消失。
+    # 白名单不可用时 fail-closed：宁可军武栏为空，也不收录任何 topic。
+    if military_topic_urls:
+        try:
+            from .military import is_military_source_article
+            military_topic_urls &= {a.url for a in articles if is_military_source_article(a)}
+        except Exception as exc:  # noqa: BLE001 - topic metadata must not block Word
+            import logging
+            military_topic_urls = set()
+            military_events = []
+            event_urls = set()
+            logging.getLogger(__name__).warning(
+                "Military topic source filtering failed; military section disabled: %s",
+                exc,
+            )
+    military_articles = [a for a in articles if a.url in military_topic_urls]
+    official_articles = [
+        a for a in articles
+        if is_official_source(a.source_id) and a.url not in military_topic_urls
+    ]
+    official_count = len(official_articles)
+
     regular_media_articles = [
         a for a in media_articles if a.url not in military_topic_urls
     ]
@@ -81,25 +169,11 @@ def build_word_digest(
             a for a in regular_media_articles
             if not is_international_media(a.source_name, international_config)
         ]
-        election_candidate_articles = [
-            a for a in media_articles
-            if not is_international_media(a.source_name, international_config)
-        ]
     else:
         intl_media_articles = []
         domestic_media_articles = regular_media_articles
-        election_candidate_articles = media_articles
 
-    # 九合一选举专题：启用配置时，从国内媒体稿中摘出九合一新闻，
-    # 其余仍进（一）~（五）分类小节（互斥路由：九合一稿不再出现在政治新闻栏）。
-    election_enabled = bool(election_config and election_config.get("enabled", False))
-    election_articles: list[Article] = []
-    if election_enabled:
-        election_articles = [
-            a for a in election_candidate_articles
-            if _is_election_article(a, election_config, election_entities, election_annotations)
-        ]
-        election_urls = {a.url for a in election_articles}
+    if election_urls:
         domestic_media_articles = [
             a for a in domestic_media_articles
             if a.url not in election_urls
@@ -257,9 +331,12 @@ def build_word_digest(
                     importance_results, prefix_note="",
                 )
 
-    if military_articles:
+    if military_articles or military_events:
         heading_num += 1
         doc.add_heading(f"{_primary_num(heading_num)}、军武动态", level=1)
+        if military_events:
+            from .military.output import render_word_events
+            render_word_events(doc, military_events, catch_up_urls)
         military_articles.sort(
             key=lambda x: (
                 x.published_at.timestamp() if x.published_at else 0,
@@ -267,7 +344,8 @@ def build_word_digest(
             ),
             reverse=True,
         )
-        for idx, article in enumerate(military_articles, 1):
+        legacy_military_articles = [a for a in military_articles if a.url not in event_urls]
+        for idx, article in enumerate(legacy_military_articles, len(military_events) + 1):
             _render_media_item(
                 doc, article, idx, catch_up_urls,
                 importance_results, prefix_note="",

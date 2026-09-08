@@ -56,7 +56,7 @@ config/sources.yaml
    └─> 内容过滤（config/content_filter.yaml：经济栏目里的彩票/美食/营销等社会琐事）
    └─> 时效分级（fresh / catch-up / stale / unknown / future）
    └─> 重要度分级（config/importance_rules.yaml）
-   └─> 文章梗概（RSS 导语直取；缺失时抓正文 + DeepSeek 按五要素生成，SUMMARIZER_MODE 可配）
+   └─> 文章梗概（RSS 导语直取；缺失时抓正文 + LLM 按五要素生成，SUMMARIZER_MODE 可配；LLM 默认经本地 Command Code 网关调用 deepseek flash，见 `app/cmd_gateway.py`）
    └─> 文本摘要 + 统计 → notifier 推送
    └─> Word 简报（python-docx）→ 飞书文档发送
 ```
@@ -276,9 +276,10 @@ tw-news-monitor-simple/
 | `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` | 飞书 App 机器人 |
 | `FEISHU_WEBHOOK_URL` | 飞书 Webhook（旧渠道） |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | Telegram |
-| `DEEPSEEK_API_KEY` | 深度分析 API |
+| `DEEPSEEK_API_KEY` | 选举评估等深度分析 API（摘要链路不依赖它） |
 | `SUMMARIZER_MODE` / `SUMMARIZER_MAX_LENGTH` / `SUMMARIZER_BATCH_SIZE` | 文章梗概：模式（rss/llm/meta/hybrid/none）、长度上限、LLM 批量大小 |
 | `SUMMARIZER_CONTENT_CHARS` / `SUMMARIZER_RETRY_HOURS` | 正文截取字符数（默认800）、抓取失败重试间隔（小时） |
+| `SUMMARIZER_BASE_URL` / `SUMMARIZER_MODEL` | 摘要 LLM 端点（默认本地 Command Code 网关 `http://127.0.0.1:8765/v1` + `deepseek/deepseek-v4-flash`；未设置时回退 `DEEPSEEK_*`） |
 | `NEWS_DB_PATH` / `SOURCES_CONFIG_PATH` / `DATABASE_PATH` | 路径覆盖 |
 | `NEWS_CATCHUP_ENABLED` / `NEWS_CATCHUP_MAX_MINUTES` | 补发开关与窗口 |
 | `DISABLE_FEISHU_SEND` | 停用飞书发送 |

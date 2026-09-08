@@ -215,19 +215,43 @@ def rss_summary_from_entry(entry, max_length: int = DEFAULT_MAX_LENGTH) -> str |
 
 
 def deepseek_available() -> bool:
+    """Whether the summarizer's LLM endpoint is configured.
+
+    The summarizer is fully independent from the election assessment
+    pipeline: it enables itself from ``SUMMARIZER_API_KEY`` (any non-empty
+    placeholder works - the local Command Code gateway does not validate
+    keys) and falls back to ``DEEPSEEK_API_KEY`` only for older .env files.
+    """
     load_dotenv()
-    return bool(os.getenv("DEEPSEEK_API_KEY", "").strip())
+    return bool(
+        (os.getenv("SUMMARIZER_API_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")).strip()
+    )
 
 
 def _load_deepseek_client() -> DeepSeekClient | None:
+    """Build the summarizer's LLM client.
+
+    The summarizer resolves its endpoint independently from the election
+    assessment pipeline so the two can point at different providers:
+    ``SUMMARIZER_BASE_URL`` / ``SUMMARIZER_MODEL`` win when set (e.g. a local
+    Command Code gateway + ``deepseek/deepseek-v4-flash``), otherwise they
+    fall back to the shared ``DEEPSEEK_*`` variables.
+    """
     if not deepseek_available():
         return None
+    api_key = os.getenv("SUMMARIZER_API_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")
     return DeepSeekClient(
-        api_key=os.getenv("DEEPSEEK_API_KEY", "").strip(),
-        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
-        timeout=_int_env("DEEPSEEK_TIMEOUT_SECONDS", 180),
-        max_retries=_int_env("DEEPSEEK_MAX_RETRIES", 2),
+        api_key=api_key.strip(),
+        base_url=os.getenv(
+            "SUMMARIZER_BASE_URL",
+            os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        ),
+        model=os.getenv(
+            "SUMMARIZER_MODEL",
+            os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+        ),
+        timeout=_int_env("SUMMARIZER_TIMEOUT_SECONDS", 180),
+        max_retries=_int_env("SUMMARIZER_MAX_RETRIES", 2),
     )
 
 

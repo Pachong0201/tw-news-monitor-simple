@@ -29,7 +29,7 @@ def load_military_config(config_path: str | Path | None = None) -> dict:
     """
 
     if config_path is None:
-        config_path = Path(__file__).resolve().parent.parent / DEFAULT_CONFIG_PATH
+        config_path = Path(__file__).resolve().parents[2] / DEFAULT_CONFIG_PATH
     path = Path(config_path)
     disabled = {"enabled": False, "keep_keywords": [], "drop_phrases": []}
     if not path.exists():
@@ -65,6 +65,40 @@ def is_military_source(source: dict) -> bool:
         source.get("topic") == MILITARY_TOPIC
         and source.get("military_source_type") in MILITARY_SOURCE_TYPES
     )
+
+
+def military_source_ids() -> frozenset[str]:
+    """Return the configured military-channel source ids (sources.yaml topic=military).
+
+    The whitelist is the single fact source for the Word "军武动态" section:
+    only articles from these ids may enter it.  Missing/unreadable config
+    fails closed to an empty set so the section cannot ingest foreign news.
+    """
+
+    path = Path(__file__).resolve().parents[2] / "config/sources.yaml"
+    try:
+        with path.open(encoding="utf-8-sig") as stream:
+            data = yaml.safe_load(stream)
+        sources = data.get("sources") if isinstance(data, dict) else None
+        if not isinstance(sources, list):
+            raise ValueError("sources.yaml must contain a sources list")
+        return frozenset(
+            entry["id"]
+            for entry in sources
+            if isinstance(entry, dict)
+            and entry.get("topic") == MILITARY_TOPIC
+            and entry.get("enabled", True) is not False
+            and entry.get("id")
+        )
+    except Exception as exc:  # noqa: BLE001 - whitelist must fail closed
+        logger.warning("Military source id list unavailable: %s", exc)
+        return frozenset()
+
+
+def is_military_source_article(article) -> bool:
+    """Return True only when an article came from a configured military channel."""
+
+    return getattr(article, "source_id", None) in military_source_ids()
 
 
 def _contains_any(text: str, terms: list[str]) -> bool:

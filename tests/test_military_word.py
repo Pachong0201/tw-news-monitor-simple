@@ -4,6 +4,7 @@ from docx import Document
 
 from app.election2026.config import load_election_config, load_entities
 from app.importance import ImportanceResult
+from app.military.config import load_rules
 from app.models import Article
 from app.word_digest import build_word_digest
 
@@ -13,7 +14,7 @@ ELECTION_CONFIG = load_election_config()
 ELECTION_ENTITIES = load_entities()
 
 
-def article(title, url, category="politics", source_id="udn", source_name="联合新闻网"):
+def article(title, url, category="politics", source_id="ltn_defense", source_name="自由时报·军武"):
     return Article(
         source_id=source_id,
         source_name=source_name,
@@ -26,7 +27,15 @@ def article(title, url, category="politics", source_id="udn", source_name="联�
     )
 
 
-def render(tmp_path, articles, *, military_urls=None, importance=None, election=True):
+def render(
+    tmp_path,
+    articles,
+    *,
+    military_urls=None,
+    importance=None,
+    election=True,
+    military_event_config=None,
+):
     output = build_word_digest(
         articles,
         tmp_path,
@@ -35,6 +44,7 @@ def render(tmp_path, articles, *, military_urls=None, importance=None, election=
         importance_results=importance,
         election_config=ELECTION_CONFIG if election else None,
         election_entities=ELECTION_ENTITIES if election else None,
+        military_event_config=military_event_config,
     )
     doc = Document(output)
     return doc, [paragraph.text for paragraph in doc.paragraphs]
@@ -64,14 +74,93 @@ def test_military_section_is_rendered(tmp_path):
     assert sum(military.title in text for text in texts) == 1
 
 
-def test_election_and_military_overlap_appears_in_both_sections(tmp_path):
+def test_ordinary_election_and_military_overlap_appears_only_in_election(tmp_path):
     overlap = article(
         "台南市长参选人提出国防产业政策",
         "https://example.com/overlap",
     )
     doc, texts = render(tmp_path, [overlap], military_urls={overlap.url})
-    assert level_one_headings(doc) == ["一、九合一选举", "二、军武动态"]
+    assert level_one_headings(doc) == ["一、九合一选举"]
+    assert sum(overlap.title in text for text in texts) == 1
+
+
+def test_critical_election_and_military_overlap_stays_in_highlights_and_election(
+    tmp_path,
+):
+    overlap = article(
+        "台南市长参选人提出国防产业政策",
+        "https://example.com/critical-overlap",
+    )
+    importance = [
+        (overlap, ImportanceResult(score=90, level="critical", matched_rules=["x"]))
+    ]
+    doc, texts = render(
+        tmp_path,
+        [overlap],
+        military_urls={overlap.url},
+        importance=importance,
+    )
+    assert level_one_headings(doc) == ["一、重点提示", "二、九合一选举"]
     assert sum(overlap.title in text for text in texts) == 2
+
+
+def test_election_article_is_not_readded_by_military_event_routing(tmp_path):
+    overlap = article(
+        "台南市长参选人质疑国防部F-16V军购交付延宕",
+        "https://example.com/event-overlap",
+    )
+    event_rules = load_rules()
+    event_rules["word_enabled"] = True
+
+    doc, texts = render(
+        tmp_path,
+        [overlap],
+        military_urls={overlap.url},
+        military_event_config=event_rules,
+    )
+
+    assert level_one_headings(doc) == ["一、九合一选举"]
+    assert sum(overlap.title in text for text in texts) == 1
+
+
+def test_election_only_topic_does_not_create_military_section(tmp_path):
+    election_only = article(
+        "台南市長選舉候選人提出國防產業政策",
+        "https://example.com/election-only-topic",
+    )
+    rules = load_rules()
+    rules["word_enabled"] = True
+
+    doc, texts = render(
+        tmp_path,
+        [election_only],
+        military_urls=set(),
+        military_event_config=rules,
+    )
+
+    assert level_one_headings(doc) == ["一、九合一选举"]
+    assert "军武动态" not in "\n".join(texts)
+    assert sum(election_only.title in text for text in texts) == 1
+
+
+def test_legacy_military_url_survives_when_event_presentation_disabled(tmp_path):
+    military = article(
+        "台南市長選舉後國軍完成戰備任務",
+        "https://example.com/legacy-military-only",
+    )
+    rules = load_rules()
+    rules["word_enabled"] = False
+
+    doc, texts = render(
+        tmp_path,
+        [military],
+        military_urls={military.url},
+        election=False,
+        military_event_config=rules,
+    )
+
+    assert level_one_headings(doc) == ["一、军武动态"]
+    assert sum(military.title in text for text in texts) == 1
 
 
 def test_critical_military_appears_in_highlights_and_military(tmp_path):
