@@ -47,6 +47,7 @@ def _article(
     fetched_at: datetime,
     position: int,
     summary: str | None = None,
+    published_at_precision: str = "exact",
 ) -> Article:
     return Article(
         source_id=collector.source_id,
@@ -59,6 +60,7 @@ def _article(
         position=position,
         summary=summary,
         summary_source="meta" if summary else None,
+        published_at_precision=published_at_precision,
     )
 
 
@@ -75,7 +77,14 @@ def _parse_ltn_date(text: str, now: datetime) -> datetime | None:
     if clock:
         try:
             parsed = datetime.strptime(clock.group(1), "%H:%M")
-            return now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+            candidate = now.replace(
+                hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0
+            )
+            # LTN list pages often expose only HH:MM.  Around midnight a
+            # 23:58 item seen at 00:10 belongs to yesterday, not tonight.
+            if candidate > now + timedelta(minutes=10):
+                candidate -= timedelta(days=1)
+            return candidate
         except ValueError:
             return None
     return None
@@ -203,7 +212,12 @@ class NownewsMilitaryCollector(BaseCollector):
             raw_time = str(time_node.get("datetime") or time_node.get_text(strip=True)) if time_node else ""
             if raw_time:
                 try:
-                    published_at = datetime.fromisoformat(raw_time).replace(tzinfo=TAIPEI)
+                    normalized_time = raw_time.strip().replace("Z", "+00:00")
+                    parsed_time = datetime.fromisoformat(normalized_time)
+                    if parsed_time.tzinfo is not None:
+                        published_at = parsed_time.astimezone(TAIPEI)
+                    else:
+                        published_at = parsed_time.replace(tzinfo=TAIPEI)
                 except ValueError:
                     published_at = None
             parsed.append(
@@ -310,6 +324,7 @@ class MNAMilitaryCollector(BaseCollector):
                     fetched_at=now,
                     position=len(articles) + 1,
                     summary=summary,
+                    published_at_precision="date_only" if published_at else "unknown",
                 )
             )
             if len(articles) >= self.MAX_ITEMS:

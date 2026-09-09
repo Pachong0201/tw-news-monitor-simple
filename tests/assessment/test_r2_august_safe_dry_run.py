@@ -44,7 +44,8 @@ LIVE_DB = BASE / "data/election_context.db"
 LIVE_R2_RUNS = BASE / "data/election_assessment/tainan_2026/r2_runs"
 
 AUGUST_PERIOD_END = "2026-08-15"
-SYNTH_COVERAGE_NAME = "fact_coverage_20260815_v220"
+# 合成版本号必须高于当前主目录的 20260903_v905，才能被选择器选中。
+SYNTH_COVERAGE_NAME = "fact_coverage_20260904_v906"
 RUN_KEY = "tainan_mayoral_2026__20260801__20260815"
 PERIOD_DIR = "work/20260801_20260815"
 # Windows 路径预算：seed 深层文件复制路径必须低于 MAX_PATH(260)，

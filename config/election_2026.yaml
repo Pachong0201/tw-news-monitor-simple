@@ -90,13 +90,9 @@ auxiliary_terms:
   - 候選人
   - 選民
 
-# ---------- 负向词（一票否决：命中即非九合一） ----------
-# 注意：2024/2028/回顧 等词命中整句即否决，避免历史/未来选举混入。
-negative_terms:
-  - 總統選舉
-  - 總統大選
-  - 2028總統
-  - 2024總統
+# ---------- 负向词：hard 一票否决 / soft 只降分 ----------
+# 总统/历史语境可能与地方选举同篇出现，因此不能再无条件硬拒绝。
+hard_negative_terms:
   - 立委選舉
   - 立法委員選舉
   - 黨主席選舉
@@ -113,9 +109,35 @@ negative_terms:
   - 南韓選舉
   - 法國選舉
   - 外國選舉
+soft_negative_terms:
+  - 總統選舉
+  - 總統大選
+  - 2028總統
+  - 2024總統
   - 回顧2024
   - 回顧
   - 歷史回顧
+soft_negative_penalty: 10
+
+# Legacy configuration key retained for readers/tools that inspect it.  The
+# classifier prefers hard_negative_terms and soft_negative_terms above.
+negative_terms:
+  - 立委選舉
+  - 立法委員選舉
+  - 黨主席選舉
+  - 中常委選舉
+  - 黨職選舉
+  - 理事長選舉
+  - 理事選舉
+  - 學生會選舉
+  - 校園選舉
+  - 美國州長
+  - 美國選舉
+  - 日本選舉
+  - 日本眾議院
+  - 南韓選舉
+  - 法國選舉
+  - 外國選舉
 
 # ---------- 政务抑制词（现任首长例行政务/灾防，非选举行为） ----------
 # 命中即抑制"市長+实体+地区"式误判（如"新北市长侯友宜视察台风应变"）。

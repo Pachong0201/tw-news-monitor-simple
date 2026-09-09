@@ -83,11 +83,13 @@ def normalize_tracking_url(url: str, *, policy: URLPolicy | None = None) -> str:
         if lower.startswith("utm_") or lower in TRACKING_KEYS:
             continue
         params.append((key, val))
+    # Host names are case-insensitive, but URL paths may be case-sensitive.
+    # Keep the user-facing path intact while still removing a trailing slash.
     path = parsed.path.rstrip("/") or "/"
     netloc_host = f"[{host}]" if ":" in host else host
     normalized = parsed._replace(
         scheme="https", netloc=netloc_host + ((":" + str(parsed.port)) if parsed.port else ""),
-        path=path.lower(), query=urlencode(sorted(params), doseq=True), fragment="",
+        path=path, query=urlencode(sorted(params), doseq=True), fragment="",
     )
     return urlunparse(normalized)
 

@@ -28,7 +28,7 @@ from .region_resolver import (
     strong_national_terms_hit,
     national_scene_hit,
 )
-from .event_classifier import classify_event_type
+from .event_classifier import classify_event_tags, classify_event_type
 from .hanzi_utils import to_traditional
 
 logger = logging.getLogger(__name__)
@@ -146,8 +146,11 @@ def classify_article(
     summary_text = to_traditional(summary or "")
     combined = f"{title_text} {summary_text}"
 
-    # 1) 负向词一票否决
-    negative = _hit_terms(combined, config.get("negative_terms", []))
+    # 1) hard negative 一票否决；soft negative 只降低分数。
+    hard_negative_terms = config.get("hard_negative_terms")
+    if hard_negative_terms is None:
+        hard_negative_terms = config.get("negative_terms", [])
+    negative = _hit_terms(combined, hard_negative_terms)
     if negative:
         logger.info(
             '[election] rejected reason=%s title="%s"',
@@ -202,6 +205,11 @@ def classify_article(
         title_text, summary_text, config, matched_entities,
         region_in_title, region_in_summary, national_anchor,
     )
+    soft_negative = _hit_terms(combined, config.get("soft_negative_terms", []))
+    if soft_negative:
+        penalty = max(0, int(config.get("soft_negative_penalty", 10)))
+        score = max(0, score - penalty)
+        matched_terms.extend(soft_negative)
     direct = int(config.get("thresholds", {}).get("direct", 60))
     review = int(config.get("thresholds", {}).get("review", 40))
 
@@ -243,6 +251,9 @@ def classify_article(
             region_anchor=region_name,
         )
         event_type = classify_event_type(combined, config.get("event_type_map", {}))
+        event_tags = classify_event_tags(
+            combined, config.get("event_type_map", {}), event_type
+        )
         logger.info(
             '[election] matched=true score=%d scope=%s region=%s type=%s title="%s"',
             score, scope, region or "", event_type, title_text,
@@ -250,7 +261,8 @@ def classify_article(
         return ElectionAnnotation(
             is_election=True, scope=scope, region=region, regions=regions,
             event_type=event_type, confidence=score,
-            matched_terms=matched_terms, reason="review_matched",
+            matched_terms=matched_terms, event_tags=event_tags,
+            reason="review_matched",
         )
 
     # score >= direct：直接判正
@@ -259,6 +271,9 @@ def classify_article(
         region_anchor=region_name,
     )
     event_type = classify_event_type(combined, config.get("event_type_map", {}))
+    event_tags = classify_event_tags(
+        combined, config.get("event_type_map", {}), event_type
+    )
     logger.info(
         '[election] matched=true score=%d scope=%s region=%s type=%s title="%s"',
         score, scope, region or "", event_type, title_text,
@@ -266,7 +281,7 @@ def classify_article(
     return ElectionAnnotation(
         is_election=True, scope=scope, region=region, regions=regions,
         event_type=event_type, confidence=score,
-        matched_terms=matched_terms, reason="matched",
+        matched_terms=matched_terms, event_tags=event_tags, reason="matched",
     )
 
 

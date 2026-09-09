@@ -38,6 +38,7 @@ Notes
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import logging
 import os
@@ -49,11 +50,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .settings import get_settings, load_environment
+
 logger = logging.getLogger("cmd_gateway")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+SERVICE_NAME = "tw-news-monitor-cmd-gateway"
+DEFAULT_MAX_BODY_BYTES = 1024 * 1024
+DEFAULT_MAX_CONCURRENCY = 1
+MAX_CONCURRENCY_LIMIT = 8
+
+
+class RequestTooLarge(ValueError):
+    pass
+
+
+def _is_loopback_host(host: str) -> bool:
+    value = str(host or "").strip().lower()
+    if value == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 def _resolve_cmd_command() -> list[str]:
     """Return the CLI launch command as a list of argv pieces.
@@ -128,9 +149,17 @@ class _Handler(BaseHTTPRequestHandler):
         logger.debug("http: " + fmt, *args)
 
     def _read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = self.headers.get("Content-Length")
+        try:
+            length = int(raw_length or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid Content-Length") from exc
         if length <= 0:
             raise ValueError("empty request body")
+        if length > self.server.max_body_bytes:
+            raise RequestTooLarge(
+                f"request body exceeds {self.server.max_body_bytes} bytes"
+            )
         raw = self.rfile.read(length)
         try:
             return json.loads(raw.decode("utf-8"))
@@ -155,7 +184,11 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 - stdlib handler API
         parsed = urlparse(self.path)
         if parsed.path in ("/health", "/healthz"):
-            self._reply_json({"status": "ok", "model": self.server.model})
+            self._reply_json({
+                "status": "ok",
+                "service": SERVICE_NAME,
+                "model": self.server.model,
+            })
             return
         self._reply_error(404, f"not found: {parsed.path}")
 
@@ -166,6 +199,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             body = self._read_json_body()
+        except RequestTooLarge as exc:
+            self._reply_error(413, str(exc))
+            return
         except ValueError as exc:
             self._reply_error(400, str(exc))
             return
@@ -193,6 +229,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         model = body.get("model") or self.server.model or DEFAULT_MODEL
+        if not self.server.cli_semaphore.acquire(blocking=False):
+            self._reply_error(429, "maximum concurrent CLI requests reached")
+            return
         try:
             started = time.monotonic()
             content = run_headless(prompt, model=model)
@@ -200,6 +239,8 @@ class _Handler(BaseHTTPRequestHandler):
             logger.error("cmd headless failed: %s", exc)
             self._reply_error(502, str(exc))
             return
+        finally:
+            self.server.cli_semaphore.release()
 
         elapsed = time.monotonic() - started
         payload = {
@@ -228,13 +269,30 @@ def make_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     model: str | None = None,
+    *,
+    allow_non_loopback: bool = False,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+    max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
 ) -> ThreadingHTTPServer:
+    if not allow_non_loopback and not _is_loopback_host(host):
+        raise ValueError(
+            "CMD Gateway must bind to loopback; pass allow_non_loopback=True "
+            "only for an explicit trusted deployment"
+        )
+    max_concurrency = max(1, min(int(max_concurrency), MAX_CONCURRENCY_LIMIT))
+    max_body_bytes = max(1024, min(int(max_body_bytes), 2 * 1024 * 1024))
     server = ThreadingHTTPServer((host, port), _Handler)
     server.model = model or DEFAULT_MODEL
+    server.service_name = SERVICE_NAME
+    server.max_body_bytes = max_body_bytes
+    server.cli_semaphore = threading.BoundedSemaphore(max_concurrency)
+    server.max_concurrency = max_concurrency
     return server
 
 
 def main(argv: list[str] | None = None) -> None:
+    root = load_environment(Path(__file__).resolve().parent.parent)
+    settings = get_settings(root, load_env=False)
     parser = argparse.ArgumentParser(
         prog="python -m app.cmd_gateway",
         description=(
@@ -242,21 +300,39 @@ def main(argv: list[str] | None = None) -> None:
             "(default model deepseek/deepseek-v4-flash)."
         ),
     )
-    parser.add_argument("--host", default=os.getenv("CMD_GATEWAY_HOST", DEFAULT_HOST))
-    parser.add_argument("--port", type=int, default=int(os.getenv("CMD_GATEWAY_PORT", str(DEFAULT_PORT))))
+    parser.add_argument("--host", default=settings.cmd_gateway_host)
+    parser.add_argument("--port", type=int, default=settings.cmd_gateway_port)
     parser.add_argument(
         "--model",
         default=os.getenv("CMD_GATEWAY_MODEL", DEFAULT_MODEL),
         help=f"Command Code model id (default: {DEFAULT_MODEL})",
     )
-    parser.add_argument("--log-level", default="INFO")
+    parser.add_argument("--log-level", default=settings.log_level)
+    parser.add_argument(
+        "--allow-non-loopback", action="store_true",
+        default=settings.cmd_gateway_allow_non_loopback,
+        help="explicitly allow binding outside loopback",
+    )
+    parser.add_argument(
+        "--max-concurrency", type=int,
+        default=settings.cmd_gateway_max_concurrency,
+    )
+    parser.add_argument(
+        "--max-body-bytes", type=int,
+        default=settings.cmd_gateway_max_body_bytes,
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    server = make_server(args.host, args.port, model=args.model)
+    server = make_server(
+        args.host, args.port, model=args.model,
+        allow_non_loopback=args.allow_non_loopback,
+        max_concurrency=args.max_concurrency,
+        max_body_bytes=args.max_body_bytes,
+    )
     logger.info(
         "cmd gateway listening on http://%s:%d (model=%s, cli=%s)",
         args.host,

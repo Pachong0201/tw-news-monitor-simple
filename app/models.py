@@ -21,3 +21,5 @@ class Article:
     language: str | None = None
     # access_level 合法值：public / metadata_only / newsletter
     access_level: str | None = None
+    # 时间精度：exact / date_only / unknown。旧对象默认 exact，保持兼容。
+    published_at_precision: str = "exact"

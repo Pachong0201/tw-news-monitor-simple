@@ -7,7 +7,7 @@ CNA_ARTICLE_PATTERN = re.compile(r"^/news/([a-z]+)/(\d+)\.aspx$")
 LTN_PATH_PATTERN = re.compile(r"^/news/[^/]+/[^/]+/\d+$")
 NEWTALK_PATTERN = re.compile(r"^/news/view/\d{4}-\d{2}-\d{2}/(\d+)$")
 STORM_PATTERN = re.compile(r"^/article/(\d+)")
-EY_PATTERN = re.compile(r"^/page/[0-9a-f]+//([0-9a-f-]+)")
+EY_PATTERN = re.compile(r"^/page/[0-9a-f]+//([0-9a-f-]+)", re.IGNORECASE)
 
 def article_identity_key(url: str) -> str:
     normalized = BaseCollector.normalize_url(url)

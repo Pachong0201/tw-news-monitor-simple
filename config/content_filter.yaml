@@ -4,7 +4,7 @@
 # 社会琐事（彩票开奖、美食消费、营销活动、职场生活等）。
 #
 # mode:
-#   drop_before_save       命中关键词的新闻不入库（默认，源头过滤）
+#   drop_before_save       命中关键词的新闻不入库
 #   exclude_from_delivery  新闻照常入库，但不出现在摘要/Word/飞书交付中
 #
 # categories:
@@ -16,7 +16,7 @@
 # 匹配方式：对标题（含 RSS 摘要）做不区分大小写的子串匹配，
 # 命中任一关键词即过滤。关键词可按需增删。
 enabled: true
-mode: drop_before_save
+mode: exclude_from_delivery
 categories:
   _default:
     - 娛樂

@@ -38,7 +38,7 @@ def test_db_enrichment_missing_from_seed_fails():
     assert {'enrich_002', 'enrich_009', 'enrich_010'} <= seed_enrich, \
         f'Seed missing enrichment: {seed_enrich}'
 
-# ─── 2. Seed rebuild links == 75, not 71 ───
+# ─── 2. Seed rebuild links == current formal baseline ───
 def test_seed_rebuild_links_75():
     dbp = _tmpdb()
     ok, _ = _rebuild(dbp)
@@ -46,7 +46,7 @@ def test_seed_rebuild_links_75():
     links = conn.execute('SELECT COUNT(*) FROM event_sources').fetchone()[0]
     conn.close()
     Path(dbp).unlink(missing_ok=True)
-    assert links == 108, f'Expected 108 links from seed rebuild, got {links}'
+    assert links == 110, f'Expected 110 links from seed rebuild, got {links}'
 
 # ─── 3. Enrichment source_ids present after rebuild ───
 def test_enrichment_source_ids_after_rebuild():
@@ -118,7 +118,7 @@ def test_no_duplicate_analysis_after_second_bootstrap():
     conn.close()
     Path(dbp).unlink(missing_ok=True)
 
-# ─── 8. 75 event-source pairs all present in rebuilt DB ───
+# ─── 8. All event-source pairs present in rebuilt DB ───
 def test_75_pairs_present():
     dbp = _tmpdb()
     _rebuild(dbp)
@@ -126,7 +126,7 @@ def test_75_pairs_present():
     pairs = set(conn.execute('SELECT event_id, source_id FROM event_sources').fetchall())
     conn.close()
     Path(dbp).unlink(missing_ok=True)
-    assert len(pairs) == 108, f'Expected 108 pairs, got {len(pairs)}'
+    assert len(pairs) == 110, f'Expected 110 pairs, got {len(pairs)}'
 
 # ─── 9. Target event business fields unchanged after rebuild ───
 def test_target_event_business_fields_unchanged():
@@ -138,12 +138,12 @@ def test_target_event_business_fields_unchanged():
         assert e['event_type'] in ('faction_conflict', 'campaign_launch', 'governance_event', 'joint_campaign')
         assert e['fact_status'] in ('verified', 'multi_source_verified', 'pending_verification')
 
-# ─── 10. Non-target events unchanged (29 events) ───
+# ─── 10. Non-target events unchanged ───
 def test_non_target_events_unchanged():
     events = load_jsonl(SEED / 'events.jsonl')
     target = {'evt_tnn_20260120_dpp_caucus_conflict', 'evt_tnn_20260720_dpp_tainan_team_campaign_photos'}
     others = [e for e in events if e['event_id'] not in target]
-    assert len(others) == 46, f'Expected 46 non-target events, got {len(others)}'
+    assert len(others) == 48, f'Expected 48 non-target events, got {len(others)}'
 
 # ─── 11. Equivalence report exists and ready ───
 def test_equivalence_report_ready():
@@ -180,7 +180,7 @@ def test_production_db_unchanged():
         'links': conn.execute('SELECT COUNT(*) FROM event_sources').fetchone()[0],
     }
     conn.close()
-    assert c == {'events': 48, 'sources': 113, 'links': 108}
+    assert c == {'events': 50, 'sources': 113, 'links': 110}
 
 # ─── 15. Preflight report exists ───
 def test_preflight_report():

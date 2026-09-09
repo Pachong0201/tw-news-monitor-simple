@@ -1,4 +1,6 @@
 enabled: true
+# Noise is retained in news.db and excluded only from delivery.
+noise_mode: exclude_from_delivery
 
 # Protection terms take priority over noise phrases.  Traditional and
 # simplified spellings are both explicit because feeds can contain either.

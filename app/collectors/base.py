@@ -148,9 +148,11 @@ class BaseCollector(ABC):
         """Normalize URL for deduplication.
 
         Strips tracking parameters (from, utm_*, fbclid, gclid),
-        removes fragments, lowercases host and path, removes
+        removes fragments, lowercases scheme and host, preserves the
+        case-sensitive path, removes
         trailing slashes, and sorts remaining query parameters
-        for stable dedup keys.
+        for stable display URLs.  Cross-URL identity aliases are handled
+        separately by ``article_identity_key``.
         """
         parsed = urlparse(url.strip())
         normalized = parsed._replace(
@@ -159,7 +161,6 @@ class BaseCollector(ABC):
             fragment="",
         )
         path = normalized.path.rstrip("/")
-        path = path.lower()
         normalized = normalized._replace(path=path)
         # Strip tracking parameters from query string
         if normalized.query:

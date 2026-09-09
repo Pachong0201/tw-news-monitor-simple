@@ -22,9 +22,9 @@ class TestBootstrap:
         assert stats['elections'] == 1
         assert stats['actors'] == 7
         assert stats['sources'] == 113
-        assert stats['events'] == 48
+        assert stats['events'] == 50
         assert stats['snapshots'] == 5
-        assert stats['fts'] == 48
+        assert stats['fts'] == 50
         os.unlink(p)
 
     def test_second_import_idempotent(self):

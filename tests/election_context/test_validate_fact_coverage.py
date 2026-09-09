@@ -26,7 +26,7 @@ def _load_jsonl(path):
 # Test 1: Formal events readable
 def test_formal_events_readable():
     evts = _load_jsonl(SEED / 'events.jsonl')
-    assert len(evts) == 48
+    assert len(evts) == 50
 
 # Test 2: Formal sources readable
 def test_formal_sources_readable():

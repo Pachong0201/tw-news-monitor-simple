@@ -8,12 +8,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from dotenv import load_dotenv
-
 from app.election_classifier import ElectionClassifier
 from app.election_fact_store import ElectionFactStore
 from app.election_event_merge import merge_articles_into_events
 from app.election_utils import format_taipei_now
+from app.settings import get_settings, load_environment
 
 TAIPEI = timezone(timedelta(hours=8))
 logger = logging.getLogger(__name__)
@@ -138,12 +137,13 @@ def collect_stats(store: ElectionFactStore, news_conn, classifier: ElectionClass
     }
 
 def main():
+    load_environment(PROJECT_ROOT)
+    settings = get_settings(PROJECT_ROOT, load_env=False)
     parser = argparse.ArgumentParser(description='Election Watch Scanner')
     parser.add_argument('command', choices=['scan', 'backfill', 'status'])
     parser.add_argument('--days', type=int, default=90)
-    parser.add_argument('--db', type=str, default=str(NEWS_DB_PATH))
+    parser.add_argument('--db', type=str, default=str(settings.news_db_path))
     args = parser.parse_args()
-    load_dotenv()
     classifier = ElectionClassifier(CONFIG_PATH)
     store = ElectionFactStore(DB_PATH)
     store.connect()

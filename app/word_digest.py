@@ -51,6 +51,10 @@ def build_word_digest(
         raise ValueError("No articles to generate Word digest")
     output_dir.mkdir(parents=True, exist_ok=True)
     generated_at = generated_at or datetime.now()
+    importance_by_url = {
+        article.url: result
+        for article, result in (importance_results or [])
+    }
     
     if catch_up_urls is None:
         catch_up_urls = set()
@@ -258,10 +262,8 @@ def build_word_digest(
             doc.add_heading(f"{'一二三四五六七八九十'[sub_idx-1]}）{info['display_name']}", level=2)
             for idx, article in enumerate(cat_arts, 1):
                 p = doc.add_paragraph()
-                if importance_results:
-                    _lev = next((r.level for a, r in importance_results if a is article), "")
-                else:
-                    _lev = ""
+                result = importance_by_url.get(article.url)
+                _lev = result.level if result is not None else ""
                 _pfx = "【重大】" if _lev == "critical" else "【重点】" if _lev == "important" else ""
                 if article.url in catch_up_urls:
                     display_title = f"{idx}. 【补发】{_pfx}{article.title}"
@@ -312,6 +314,7 @@ def build_word_digest(
             _render_media_item(
                 doc, article, idx, catch_up_urls,
                 importance_results, prefix_note="",
+                importance_by_url=importance_by_url,
             )
     
     # 九合一选举专题一级栏目：位于官方信源之后、新闻媒体之前。
@@ -322,6 +325,7 @@ def build_word_digest(
         election_groups = _group_election_articles(
             election_articles, election_config, election_entities,
             election_annotations, importance_results,
+            importance_by_url=importance_by_url,
         )
         for sub_idx, (group_title, group_articles) in enumerate(election_groups, 1):
             doc.add_heading(f"{_subsection_num(sub_idx)}{group_title}", level=2)
@@ -329,6 +333,7 @@ def build_word_digest(
                 _render_media_item(
                     doc, article, idx, catch_up_urls,
                     importance_results, prefix_note="",
+                    importance_by_url=importance_by_url,
                 )
 
     if military_articles or military_events:
@@ -349,6 +354,7 @@ def build_word_digest(
             _render_media_item(
                 doc, article, idx, catch_up_urls,
                 importance_results, prefix_note="",
+                importance_by_url=importance_by_url,
             )
     
     if media_articles:
@@ -372,10 +378,8 @@ def build_word_digest(
             )
             for idx, article in enumerate(cat_articles, 1):
                 p = doc.add_paragraph()
-                if importance_results:
-                    _lev = next((r.level for a, r in importance_results if a is article), "")
-                else:
-                    _lev = ""
+                result = importance_by_url.get(article.url)
+                _lev = result.level if result is not None else ""
                 _pfx = "【重大】" if _lev == "critical" else "【重点】" if _lev == "important" else ""
                 if article.url in catch_up_urls:
                     display_title = f"{idx}. 【补发】{_pfx}{article.title}"
@@ -422,10 +426,9 @@ def build_word_digest(
                 f"{_primary_num(heading_num)}、国际媒体", level=1
             )
             def _importance_order(article: Article) -> int:
-                if importance_results:
-                    result = next((r for a, r in importance_results if a is article), None)
-                    if result is not None:
-                        return {"critical": 0, "important": 1, "normal": 2}.get(result.level, 2)
+                result = importance_by_url.get(article.url)
+                if result is not None:
+                    return {"critical": 0, "important": 1, "normal": 2}.get(result.level, 2)
                 return 2
 
             intl_sorted = sorted(
@@ -438,10 +441,8 @@ def build_word_digest(
             )
             for idx, article in enumerate(intl_sorted, 1):
                 p = doc.add_paragraph()
-                if importance_results:
-                    _lev = next((r.level for a, r in importance_results if a is article), "")
-                else:
-                    _lev = ""
+                result = importance_by_url.get(article.url)
+                _lev = result.level if result is not None else ""
                 _pfx = "【重大】" if _lev == "critical" else "【重点】" if _lev == "important" else ""
                 translation = (international_translations or {}).get(article.url)
                 if translation is None:
@@ -632,6 +633,7 @@ def _group_election_articles(
     election_entities: dict | None,
     election_annotations: dict[str, ElectionAnnotation] | None,
     importance_results: list | None,
+    importance_by_url: dict | None = None,
 ) -> list[tuple[str, list[Article]]]:
     """把九合一稿按展示分组：全局动向 + 各县市（含合并组）。
 
@@ -640,6 +642,11 @@ def _group_election_articles(
     """
     if not election_config:
         return []
+    if importance_by_url is None:
+        importance_by_url = {
+            article.url: result
+            for article, result in (importance_results or [])
+        }
     regions_cfg = election_config.get("regions", {})
     merge_groups = regions_cfg.get("merge_groups", {}) or {}
     display_order = regions_cfg.get("display_order", []) or []
@@ -672,14 +679,8 @@ def _group_election_articles(
 
     # 排序键：importance → 时间倒序
     def _sort_key(article: Article):
-        if importance_results:
-            result = next((r for a, r in importance_results if a is article), None)
-            if result is not None:
-                level = result.level
-            else:
-                level = ""
-        else:
-            level = ""
+        result = importance_by_url.get(article.url)
+        level = result.level if result is not None else ""
         order = {"critical": 0, "important": 1, "normal": 2}.get(level, 2)
         return (
             order,
@@ -709,15 +710,19 @@ def _render_media_item(
     catch_up_urls: set[str],
     importance_results: list | None,
     prefix_note: str = "",
+    importance_by_url: dict | None = None,
 ) -> None:
     """渲染一条媒体稿条目（标题/梗概/来源/时间/链接）。
 
     与既有新闻媒体栏共用同一样式与【重大】【重点】【补发】前缀逻辑。
     """
-    if importance_results:
-        _lev = next((r.level for a, r in importance_results if a is article), "")
-    else:
-        _lev = ""
+    if importance_by_url is None:
+        importance_by_url = {
+            item.url: result
+            for item, result in (importance_results or [])
+        }
+    result = importance_by_url.get(article.url)
+    _lev = result.level if result is not None else ""
     _pfx = "【重大】" if _lev == "critical" else "【重点】" if _lev == "important" else ""
     if prefix_note:
         _pfx = f"{prefix_note}{_pfx}"

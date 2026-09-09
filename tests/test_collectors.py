@@ -271,9 +271,9 @@ def test_url_normalization():
     c = collector.normalize_url("https://example.com/news/1#section")
     assert a == c
 
-    # Different case in host
+    # Host is case-insensitive, but the path remains user-visible/case-sensitive.
     d = collector.normalize_url("HTTPS://EXAMPLE.COM/NEWS/1")
-    assert a == d
+    assert d == "https://example.com/NEWS/1"
     # UDN tracking params: different 'from' values should produce same URL
     e = collector.normalize_url(
         "https://udn.com/news/story/1234/56789?from=udn-catebreaknews_ch2"

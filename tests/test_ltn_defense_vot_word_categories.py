@@ -104,6 +104,7 @@ def test_production_sources_enable_ltn_defense_and_content_classified_vot():
         "enabled": True,
         "id": "ltn_defense",
         "name": "自由时报·军武",
+        "source_kind": "commercial_media",
         "type": "ltn_military",
         "topic": "military",
         "military_source_type": "commercial_military",
@@ -111,7 +112,7 @@ def test_production_sources_enable_ltn_defense_and_content_classified_vot():
     }
 
     vot = sources["voice_of_tibet_cn"]
-    assert vot["enabled"] is True
+    assert vot["enabled"] is False
     assert vot["url"] == "https://cn.vot.org/feed/"
     assert "category" not in vot
     assert "default_category" not in vot

@@ -60,19 +60,22 @@ sources:
   type: president_json
   url: https://www.president.gov.tw/Handler/GetNews.ashx
 - category: politics
-  enabled: true
+  # fallback only: stable CNA RSS entries above are the production path.
+  enabled: false
   id: cna_web_politics
   name: 中央社
   type: cna_list_html
   url: https://www.cna.com.tw/list/aipl.aspx
 - category: economy
-  enabled: true
+  # fallback only: stable CNA RSS entries above are the production path.
+  enabled: false
   id: cna_web_economy
   name: 中央社
   type: cna_list_html
   url: https://www.cna.com.tw/list/aie.aspx
 - category: international
-  enabled: true
+  # fallback only: stable CNA RSS entries above are the production path.
+  enabled: false
   id: cna_web_international
   name: 中央社
   type: cna_list_html
@@ -99,6 +102,7 @@ sources:
   enabled: true
   id: ltn_defense
   name: 自由时报·军武
+  source_kind: commercial_media
   type: ltn_military
   topic: military
   military_source_type: commercial_military
@@ -107,6 +111,7 @@ sources:
   enabled: true
   id: udn_military
   name: 联合新闻网·军事
+  source_kind: commercial_media
   type: udn
   topic: military
   military_source_type: commercial_military
@@ -115,6 +120,7 @@ sources:
   enabled: true
   id: nownews_military
   name: NOWnews·军武战情
+  source_kind: commercial_media
   type: nownews_military
   topic: military
   military_source_type: commercial_military
@@ -125,6 +131,8 @@ sources:
   enabled: true
   id: ydn_defense_focus
   name: 青年日报·国防焦点
+  official: true
+  source_kind: official_military
   type: rss
   topic: military
   military_source_type: official_military
@@ -133,6 +141,8 @@ sources:
   enabled: true
   id: ydn_weapons_tour
   name: 青年日报·武备巡礼
+  official: true
+  source_kind: official_military
   type: rss
   topic: military
   military_source_type: official_military
@@ -141,6 +151,8 @@ sources:
   enabled: true
   id: ydn_military_world
   name: 青年日报·军视界
+  official: true
+  source_kind: official_military
   type: rss
   topic: military
   military_source_type: official_military
@@ -149,6 +161,8 @@ sources:
   enabled: true
   id: mna_military
   name: 国防部军事新闻通讯社
+  official: true
+  source_kind: official_military
   type: mna_military
   topic: military
   military_source_type: official_military
@@ -198,7 +212,8 @@ sources:
 # 西藏之聲（Voice of Tibet，印度達蘭薩拉）中文新聞
 # 注意：cn.vot.org 在當前監測環境持續返回 HTTP 429，RSS 地址尚未完成
 # 生產網絡驗證；本來源不設固定 category，文章按內容進入既有欄目。
-- enabled: true
+# Disabled until the persistent HTTP 429 condition is revalidated.
+- enabled: false
   id: voice_of_tibet_cn
   name: 西藏之声
   type: rss

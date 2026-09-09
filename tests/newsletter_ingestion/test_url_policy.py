@@ -13,6 +13,12 @@ def test_tracking_parameters_and_fragment_are_removed():
     ) == "https://www.wsj.com/articles/a?foo=bar"
 
 
+def test_url_policy_preserves_case_sensitive_path():
+    assert normalize_tracking_url(
+        "https://www.example.com/News/ABC123?utm_source=test"
+    ) == "https://www.example.com/News/ABC123"
+
+
 def test_url_policy_is_https_only_and_rejects_credentials_and_local_networks():
     for value in (
         "http://www.example.com/a",

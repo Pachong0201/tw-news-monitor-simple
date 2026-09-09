@@ -103,7 +103,8 @@ class TestCliIntegration:
         elig = pack["generation_eligibility"]
         assert elig["final_report_allowed"] is True
         assert elig["allowed_generation_mode"] == "final"
-        assert pack["evidence_statistics"]["active_research_task_count"] == 3
+        # 当前正式 coverage 已完成全部研究任务，因此活动任务数为 0。
+        assert pack["evidence_statistics"]["active_research_task_count"] == 0
         assert pack["evidence_statistics"]["risk_change_count"] == len(pack["risk_changes"])
         contract = json.loads((period_dir / "llm_input_contract.json").read_text(encoding="utf-8"))
         assert contract["schema_version"] == "1.1"

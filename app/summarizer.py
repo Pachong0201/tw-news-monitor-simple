@@ -23,7 +23,6 @@ from pathlib import Path
 
 import httpx
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 
 from .deepseek_analysis import DeepSeekClient
 from .models import Article
@@ -60,7 +59,6 @@ def _int_env(name: str, default: int) -> int:
 
 
 def summarizer_mode() -> str:
-    load_dotenv()
     mode = os.getenv("SUMMARIZER_MODE", "hybrid").strip().lower()
     if mode not in ("none", "rss", "llm", "meta", "hybrid"):
         logger.warning("Unknown SUMMARIZER_MODE=%r, falling back to hybrid", mode)
@@ -136,7 +134,6 @@ def summary_needs_rewrite(article: Article, max_length: int = DEFAULT_MAX_LENGTH
 
 
 def _env_truthy(name: str) -> bool:
-    load_dotenv()
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -222,7 +219,6 @@ def deepseek_available() -> bool:
     placeholder works - the local Command Code gateway does not validate
     keys) and falls back to ``DEEPSEEK_API_KEY`` only for older .env files.
     """
-    load_dotenv()
     return bool(
         (os.getenv("SUMMARIZER_API_KEY", "") or os.getenv("DEEPSEEK_API_KEY", "")).strip()
     )

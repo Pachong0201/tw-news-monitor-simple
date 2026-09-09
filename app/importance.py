@@ -11,7 +11,10 @@ DEFAULT_RULES_PATH = "config/importance_rules.yaml"
 
 ALLOWED_TRACKS = ("election", "politics_security")
 ALLOWED_LEVEL_CAPS = ("normal", "important", "critical")
-LEVEL_ORDER = {"critical": 0, "important": 1, "normal": 2}
+# Higher rank means a higher editorial level.  Keep LEVEL_ORDER as a
+# compatibility alias because older callers import that name directly.
+LEVEL_RANK = {"normal": 0, "important": 1, "critical": 2}
+LEVEL_ORDER = LEVEL_RANK
 
 
 class ImportanceResult:
@@ -297,15 +300,21 @@ def score_article(
                 r["level"] = "normal"
                 r["reasons"].append("国际关联性不足")
 
-    best = max(
+    # The rule list is configuration, not a tie-breaker.  A stable rule-id
+    # tie-break keeps the same result when YAML rules are reordered.
+    best = sorted(
         matched_results,
-        key=lambda r: (LEVEL_ORDER[r["level"]], r["score"]),
-    )
+        key=lambda r: (
+            -LEVEL_RANK[r["level"]],
+            -r["score"],
+            str(r["rule_id"]),
+        ),
+    )[0]
 
     return ImportanceResult(
         score=best["score"],
         level=best["level"],
-        matched_rules=[r["rule_id"] for r in matched_results],
+        matched_rules=sorted(str(r["rule_id"]) for r in matched_results),
         reasons=best["reasons"],
         track=best["track"],
         matched_tracks=sorted({r["track"] for r in matched_results}),
@@ -318,7 +327,7 @@ def classify_articles(
     title_attr: str = "title",
     source_attr: str = "source_name",
     category_attr: str = "category",
-    desc_attr: str = "description",
+    desc_attr: str = "summary",
     international_config: dict | None = None,
 ) -> list:
     """Classify articles and return (article, result) pairs.
@@ -332,6 +341,11 @@ def classify_articles(
         source = getattr(article, source_attr, "")
         category = getattr(article, category_attr, "")
         desc = getattr(article, desc_attr, "")
+        # Production Article uses ``summary``.  Older fixtures and external
+        # callers may still expose only ``description``; use it only when the
+        # preferred summary value is absent.
+        if desc_attr == "summary" and not desc:
+            desc = getattr(article, "description", "")
 
         result = score_article(
             title,
@@ -383,7 +397,7 @@ def finalize_importance(
         _idx, article, result = item
         published = article.published_at if article is not None else None
         pub_ts = published.timestamp() if published else 0
-        return (LEVEL_ORDER[result.level], -result.score, -pub_ts)
+        return (-LEVEL_RANK[result.level], -result.score, -pub_ts, _idx)
 
     ordered = sorted(candidates, key=_sort_key)
     selected_idx: set[int] = set()
@@ -672,12 +686,12 @@ def select_highlights(
 
     def _sort_key(item: tuple) -> tuple:
         article, result = item
-        level_order = LEVEL_ORDER[result.level]
+        level_order = -LEVEL_RANK[result.level]
         score_neg = -result.score
         published = article.published_at if article.published_at else default_published_at
         pub_ts = published.timestamp() if published else 0
         pub_neg = -pub_ts
-        return (level_order, score_neg, pub_neg)
+        return (level_order, score_neg, pub_neg, str(getattr(article, "url", "")))
 
     highlights.sort(key=_sort_key)
 

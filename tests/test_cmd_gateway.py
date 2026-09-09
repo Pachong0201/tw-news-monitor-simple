@@ -5,6 +5,7 @@ the HTTP contract is verified without a model call.
 """
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -37,7 +38,66 @@ def _fake_headless(prompt: str, model: str | None = None, timeout: float = 300.0
 def test_health(server):
     r = httpx.get(f"{server}/health", timeout=5)
     assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert r.json()["service"] == gateway.SERVICE_NAME
     assert r.json()["model"] == "deepseek/deepseek-v4-flash"
+
+
+def test_non_loopback_bind_requires_explicit_guard():
+    with pytest.raises(ValueError, match="loopback"):
+        gateway.make_server(host="0.0.0.0", port=0)
+
+
+def test_request_body_limit_returns_413(monkeypatch):
+    monkeypatch.setattr(gateway, "run_headless", _fake_headless)
+    srv = gateway.make_server(host="127.0.0.1", port=0, max_body_bytes=1024)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        body = {"messages": [{"role": "user", "content": "x" * 1500}]}
+        response = httpx.post(
+            f"http://127.0.0.1:{srv.server_address[1]}/v1/chat/completions",
+            json=body,
+            timeout=5,
+        )
+        assert response.status_code == 413
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_cli_concurrency_limit_returns_429(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking(prompt, model=None, timeout=300.0):
+        started.set()
+        release.wait(5)
+        return "ok"
+
+    monkeypatch.setattr(gateway, "run_headless", blocking)
+    srv = gateway.make_server(host="127.0.0.1", port=0, max_concurrency=1)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{srv.server_address[1]}/v1/chat/completions"
+    body = {"messages": [{"role": "user", "content": "使用者資料"}]}
+    first_result = {}
+
+    def first_request():
+        first_result["response"] = httpx.post(url, json=body, timeout=10)
+
+    first = threading.Thread(target=first_request)
+    first.start()
+    try:
+        assert started.wait(3)
+        second = httpx.post(url, json=body, timeout=5)
+        assert second.status_code == 429
+    finally:
+        release.set()
+        first.join(10)
+        srv.shutdown()
+        srv.server_close()
+    assert first_result["response"].status_code == 200
 
 
 def test_chat_completion_contract(server):

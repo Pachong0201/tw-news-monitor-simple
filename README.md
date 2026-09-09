@@ -79,7 +79,7 @@ config/sources.yaml
 | `wsj_rss` | WSJRSSCollector | WSJ 官方冻结 RSS，Phase I 默认停用 |
 
 采集器规则：单来源上限 20 条、空标题/空 URL 跳过、统一设置超时与 User-Agent、不抓取正文、单来源故障不中断整体。
-采集器本身不做关键词过滤；关注范围过滤由入库前的 `config/content_filter.yaml` 统一执行（默认剔除经济栏目里的彩票开奖、美食消费、营销活动、职场生活等社会琐事，可随时增删关键词）。
+采集器本身不做关键词过滤；关注范围过滤由 `config/content_filter.yaml` 统一执行。生产默认 `exclude_from_delivery`：命中经济栏目里的彩票开奖、美食消费、营销活动、职场生活等社会琐事的文章仍保留在历史库，但不进入摘要、Word 或通知；特殊环境可切换为 `drop_before_save`。
 
 ### 国际媒体免费监测层 Phase I
 
@@ -91,8 +91,8 @@ config/sources.yaml
 
 ### 去重机制（`article_identity.py`）
 
-- **URL 归一化**：scheme+host+path 小写、去 fragment、去尾部斜杠。
-- **身份键（identity key）**：对归一化 URL 提取来源、日期与标题指纹，用于捕获同一文章的别名 URL（如 UDN 重复路径）。
+- **可点击 URL 清理**：scheme+host 小写、保留 path 大小写，去 tracking 参数、fragment 与尾部斜杠；身份键单独负责查重规范化。
+- **身份键（identity key）**：独立提取来源、日期与标题指纹，用于捕获同一文章的别名 URL（如 UDN 重复路径），不会改写用户看到的链接。
 - 三轮去重：本轮内 URL 去重 → 本轮内 identity 去重 → 与历史库 URL+identity 比对。
 
 ### 时效与重要度

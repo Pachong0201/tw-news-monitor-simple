@@ -14,7 +14,7 @@ import yaml
 
 from .collectors import RSSCollector, UDNCollector, EBCCollector, CNAHtmlCollector, LtnRSSCollector, PresidentCollector, ZaobaoCollector, ReutersCollector, FTAlphavilleCollector, WSJRSSCollector, WSJNewsletterCollector, BloombergNewsletterCollector, LtnMilitaryCollector, NownewsMilitaryCollector, MNAMilitaryCollector
 from .category_classifier import apply_content_classification
-from .content_filter import load_content_filter, filter_articles
+from .content_filter import apply_content_filter, load_content_filter
 from .military import (
     filter_military_articles,
     is_military_source,
@@ -28,7 +28,12 @@ from .feishu import build_highlight_card, send_card, send_document
 from .word_digest import build_word_digest
 from .summarizer import enrich_articles_with_summaries
 from .freshness import FreshnessResult, filter_fresh_articles
-from .source_registry import is_official_source, get_source_info, get_official_sources
+from .source_registry import (
+    is_official_source,
+    get_source_info,
+    get_official_sources,
+    validate_registry_against_sources,
+)
 from .time_utils import TAIPEI
 from .importance import (
     classify_articles,
@@ -56,6 +61,9 @@ from .notification_candidates import (
     build_notification_candidates,
 )
 from .source_health import SourceHealthStore, SourceOutcome
+from .settings import get_settings, load_environment
+from .news_pipeline import run_delivery_core
+from .pipeline_models import CollectionResult
 from .election2026.config import load_election_config as load_election2026_config
 from .election2026.config import load_entities as load_election2026_entities
 from .election2026.classifier import classify_articles as classify_election2026_articles
@@ -315,15 +323,31 @@ def _classify_and_persist_election2026(
             articles, election_config, election_entities
         )
         if db is not None and annotations:
-            for url, ann in annotations.items():
-                db.save_election_topic(
-                    url,
-                    scope=ann.scope,
-                    region=ann.region,
-                    regions=ann.regions,
-                    event_type=ann.event_type,
-                    confidence=ann.confidence,
-                )
+            rows = [
+                {
+                    "url": url,
+                    "topic": "election_2026_local",
+                    "scope": ann.scope,
+                    "region": ann.region,
+                    "regions": ann.regions,
+                    "event_type": ann.event_type,
+                    "confidence": ann.confidence,
+                    "metadata": {
+                        "classifier_version": "election2026-v1",
+                        "event_tags": list(getattr(ann, "event_tags", ()) or ()),
+                    },
+                }
+                for url, ann in annotations.items()
+            ]
+            try:
+                db.save_topics(rows)
+            except AttributeError:
+                for row in rows:
+                    db.save_election_topic(
+                        row["url"], scope=row["scope"], region=row["region"],
+                        regions=row["regions"], event_type=row["event_type"],
+                        confidence=row["confidence"], metadata=row["metadata"],
+                    )
         logger.info("Election 2026 annotations: %d/%d", len(annotations), len(articles))
         return annotations
     except Exception as exc:  # noqa: BLE001 - feature must never break pipeline
@@ -585,17 +609,23 @@ def collect_all(
     *,
     collector_map: dict | None = None,
     health_store: SourceHealthStore | None = None,
-) -> tuple[list, int, int, list[str]]:
+    election_config: dict | None = None,
+    election_entities: dict | None = None,
+) -> CollectionResult:
     """Collect news, dedup by URL, save new ones.
 
-    Returns (inserted, total_fetched, dup_count, failed_sources,
-             run_removed, hist_id_dups, filtered_count).
+    Topic classification happens immediately after persistence so stale,
+    unknown-time, and delivery-excluded articles still receive durable
+    metadata.  The returned object exposes named fields and retains a
+    legacy tuple iterator for older callers.
     """
     all_raw: list = []
+    fetched_articles: list = []
     total_fetched = 0
     failed: list[str] = []
-    military_filtered_count = 0
     military_source_types: dict[str, str] = {}
+    military_before_save: list = []
+    military_from_delivery: list = []
 
     active_collector_map = collector_map or COLLECTOR_MAP
     for source in sources:
@@ -628,22 +658,31 @@ def collect_all(
                 print(f"  [ERR] {source['id']}: {error_message}")
                 continue
             articles = apply_content_classification(articles, source)
+            fetched_articles.extend(articles)
             total_fetched += len(articles)
             if is_military_source(source):
-                articles, military_blocked = filter_military_articles(
-                    articles, military_config
-                )
-                military_filtered_count += len(military_blocked)
-                source_type = source["military_source_type"]
+                source_type = source.get("military_source_type", "commercial_military")
                 for article in articles:
                     previous_type = military_source_types.get(article.url)
                     if previous_type != "official_military":
                         military_source_types[article.url] = source_type
+                kept_articles, military_blocked = filter_military_articles(
+                    articles, military_config
+                )
+                noise_mode = str(
+                    (military_config or {}).get("noise_mode", "drop_before_save")
+                ).strip().lower()
+                if noise_mode == "exclude_from_delivery":
+                    articles = kept_articles + military_blocked
+                    military_from_delivery.extend(military_blocked)
+                else:
+                    articles = kept_articles
+                    military_before_save.extend(military_blocked)
                 if military_blocked:
                     logger.info(
                         "Military filter blocked %d/%d from %s: %s",
                         len(military_blocked),
-                        len(articles) + len(military_blocked),
+                        len(kept_articles) + len(military_blocked),
                         source["id"],
                         [a.title[:40] for a in military_blocked[:5]],
                     )
@@ -684,56 +723,89 @@ def collect_all(
     )
 
     # Phase 3: DB check with identity keys (prevents UDN alias re-insertion)
-    existing_urls = set(db.get_all_article_urls())
-    existing_ids = {article_identity_key(u) for u in existing_urls}
+    candidate_urls = [a.url for a in unique_articles]
+    try:
+        existing_urls = set(db.get_existing_urls(candidate_urls))
+    except AttributeError:
+        # Compatibility for injected legacy database doubles only; the
+        # production Database implementation never scans the full table here.
+        existing_urls = set(db.get_all_article_urls())
+    identity_by_url = {a.url: article_identity_key(a.url) for a in unique_articles}
+    try:
+        existing_ids = set(db.get_existing_identity_keys(list(identity_by_url.values())))
+    except AttributeError:
+        existing_ids = {article_identity_key(u) for u in existing_urls}
     candidates = []
     hist_url_dups = []
     hist_id_dups = []
     for a in unique_articles:
         if a.url in existing_urls:
             hist_url_dups.append(a)
-        elif article_identity_key(a.url) in existing_ids:
+        elif identity_by_url[a.url] in existing_ids:
             hist_id_dups.append(a)
         else:
             candidates.append(a)
 
-    # Content filter: exclude out-of-scope news (e.g. social trivia in
-    # economy feeds) before saving when mode=drop_before_save.
-    filtered_count = military_filtered_count
-    if content_filter_config and content_filter_config.get("enabled", False):
-        kept_candidates, blocked = filter_articles(candidates, content_filter_config)
-        filtered_count += len(blocked)
-        if blocked:
-            logger.info(
-                "Content filter blocked %d/%d candidates: %s",
-                len(blocked), len(candidates),
-                [a.title[:40] for a in blocked[:5]],
-            )
-        candidates = kept_candidates
+    # Content filter: its mode determines persistence versus delivery only.
+    filter_result = apply_content_filter(candidates, content_filter_config)
+    filtered_before_save = list(military_before_save)
+    filtered_before_save.extend(filter_result.filtered_before_save)
+    filtered_from_delivery = list(military_from_delivery)
+    filtered_from_delivery.extend(filter_result.filtered_from_delivery)
+    if filter_result.blocked:
+        logger.info(
+            "Content filter blocked %d/%d candidates (mode=%s): %s",
+            len(filter_result.blocked), len(candidates), filter_result.mode,
+            [a.title[:40] for a in filter_result.blocked[:5]],
+        )
+    if filter_result.mode == "drop_before_save":
+        candidates = filter_result.kept
+    else:
+        candidates = filter_result.kept + filter_result.blocked
 
     inserted = db.save_articles(candidates)
 
-    for url, source_type in military_source_types.items():
-        if not db.article_exists(url):
-            continue
+    election_annotations = _classify_and_persist_election2026(
+        inserted, db, election_config, election_entities
+    )
+    military_topic_rows = [
+        {
+            "url": article.url,
+            "topic": "military",
+            "source_type": military_source_types[article.url],
+        }
+        for article in inserted
+        if article.url in military_source_types
+    ]
+    if military_topic_rows:
         try:
-            db.save_military_topic(url, source_type=source_type)
+            db.save_topics(military_topic_rows)
+        except AttributeError:
+            for row in military_topic_rows:
+                db.save_military_topic(row["url"], source_type=row["source_type"])
         except Exception as exc:  # noqa: BLE001 - topic metadata is best-effort
-            logger.warning("Military topic persistence failed for %s: %s", url, exc)
+            logger.warning("Military topic persistence failed: %s", exc)
 
-    run_removed = len(run_dups) + len(identity_run_dups)
-    dup_count = total_fetched - len(inserted) - filtered_count
+    result = CollectionResult(
+        fetched_articles=fetched_articles,
+        inserted_articles=inserted,
+        filtered_before_save=filtered_before_save,
+        filtered_from_delivery=filtered_from_delivery,
+        failed_sources=failed,
+        run_url_duplicates=len(run_dups),
+        run_identity_duplicates=len(identity_run_dups),
+        historical_url_duplicates=len(hist_url_dups),
+        historical_identity_duplicates=len(hist_id_dups),
+    )
+    result.election_annotations = election_annotations
     logger.info(
         "Total: fetched=%d, run_url_removed=%d, run_id_removed=%d, "
         "hist_url_dup=%d, hist_id_dup=%d, filtered=%d, inserted=%d, failed=%d",
         total_fetched, len(run_dups), len(identity_run_dups),
         len(hist_url_dups), len(hist_id_dups),
-        filtered_count, len(inserted), len(failed),
+        result.filtered_count, len(inserted), len(failed),
     )
-    return (
-        inserted, total_fetched, dup_count, failed,
-        run_removed, len(hist_id_dups), filtered_count,
-    )
+    return result
 
 
 def show_db_stats(db: Database) -> None:
@@ -909,13 +981,17 @@ def main() -> None:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
-    config_path_str = os.getenv("SOURCES_CONFIG_PATH", "")
-    if config_path_str:
-        config_path = Path(config_path_str)
-    else:
-        config_path = project_root / "config" / "sources.yaml"
+    load_environment(project_root)
+    settings = get_settings(project_root, load_env=False)
+    config_path = settings.sources_config_path
     sources = load_sources(config_path)
     validate_sources_config(sources, COLLECTOR_MAP)
+    registry_missing = validate_registry_against_sources(sources)
+    if registry_missing:
+        logger.warning(
+            "Source registry active entries missing from config: %s",
+            ", ".join(registry_missing),
+        )
     importance_rules_path = project_root / 'config' / 'importance_rules.yaml'
     if importance_rules_path.exists():
         importance_rules_config = load_rules(importance_rules_path)
@@ -959,16 +1035,12 @@ def main() -> None:
         logger.info("2026 九合一选举专题 enabled")
     else:
         logger.info("2026 九合一选举专题 disabled (config missing or disabled)")
-    db_path_str = os.getenv("NEWS_DB_PATH", "")
-    if db_path_str:
-        db_path = Path(db_path_str)
-    else:
-        db_path = project_root / "data" / "news.db"
+    db_path = settings.news_db_path
     health_path = Path(os.getenv("INTERNATIONAL_SOURCE_HEALTH_PATH", "")) if os.getenv("INTERNATIONAL_SOURCE_HEALTH_PATH", "").strip() else project_root / "data" / "international_source_health.json"
     health_store = SourceHealthStore(health_path)
 
     # Setup file logging (console stays as print())
-    setup_logging(project_root / "data" / "monitor.log")
+    setup_logging(project_root / "data" / "monitor.log", settings.log_level)
     logger.info("=" * 50)
     logger.info("Taiwan News Monitor started")
     logger.info(
@@ -981,10 +1053,19 @@ def main() -> None:
         db = Database(db_path)
         db.connect()
         db.create_tables()
-        inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
+        collection = collect_all(
             sources, db, content_filter_config, military_config,
             health_store=health_store,
+            election_config=election2026_config,
+            election_entities=election2026_entities,
         )
+        inserted = collection.inserted_articles
+        total = collection.total_fetched
+        dup = collection.duplicate_count
+        failed = collection.failed_sources
+        run_removed = collection.run_removed
+        hist_id_dup = collection.historical_identity_duplicates
+        filtered_count = collection.filtered_count
         print()
         print("初始化完成：")
         print(f"  本轮采集：{total}条")
@@ -1031,8 +1112,6 @@ def main() -> None:
     # ---- List Feishu Chats --------------------------------------------
     if args.list_feishu_chats:
 
-        from dotenv import load_dotenv
-        load_dotenv()
         app_id = os.getenv("FEISHU_APP_ID", "").strip()
         app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
         if not app_id or not app_secret:
@@ -1059,8 +1138,6 @@ def main() -> None:
     # ---- Test Feishu App ----------------------------------------------
     if args.test_feishu_app:
 
-        from dotenv import load_dotenv
-        load_dotenv()
         app_id = os.getenv("FEISHU_APP_ID", "").strip()
         app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
         chat_id = os.getenv("FEISHU_CHAT_ID", "").strip()
@@ -1085,8 +1162,6 @@ def main() -> None:
     # ---- Test Feishu File ---------------------------------------------
     if args.test_feishu_file:
 
-        from dotenv import load_dotenv
-        load_dotenv()
         app_id = os.getenv("FEISHU_APP_ID", "").strip()
         app_secret = os.getenv("FEISHU_APP_SECRET", "").strip()
         chat_id = os.getenv("FEISHU_CHAT_ID", "").strip()
@@ -1137,13 +1212,11 @@ def main() -> None:
     # ---- Diagnose Collection ------------------------------------------
     if args.diagnose_collection:
 
-        from dotenv import load_dotenv
-        load_dotenv()
-        dbp = os.getenv("DATABASE_PATH", "data/news-dev.db")
-        diag_db = project_root / dbp
+        dbp = settings.database_path
+        diag_db = dbp
         if not diag_db.exists():
             print(f"诊断数据库不存在: {diag_db}")
-            print("请将备份数据库复制到 data/news-dev.db 或设置 DATABASE_PATH")
+            print("请将备份数据库复制到配置的 NEWS_DB_PATH/DATABASE_PATH")
             return
         db_obj = Database(diag_db)
         db_obj.connect()
@@ -1177,33 +1250,38 @@ def main() -> None:
         try:
             db.create_tables()
             source_baselines = _get_source_baselines(db, sources)
-            inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
+            collection = collect_all(
                 sources, db, content_filter_config, military_config,
                 health_store=tmp_health,
+                election_config=election2026_config,
+                election_entities=election2026_entities,
             )
+            inserted = collection.inserted_articles
+            total = collection.total_fetched
+            dup = collection.duplicate_count
+            failed = collection.failed_sources
+            run_removed = collection.run_removed
+            hist_id_dup = collection.historical_identity_duplicates
+            filtered_count = collection.filtered_count
             now = datetime.now(TAIPEI)
-            classification = _classify_delivery_articles(
-                inserted, source_baselines, now,
+            excluded_delivery_urls = {a.url for a in collection.filtered_from_delivery}
+            delivery = run_delivery_core(
+                inserted,
+                source_baselines,
+                now,
+                international_config=international_config,
+                importance_rules_config=importance_rules_config,
+                prepare_international_delivery=prepare_international_delivery,
+                enrich_summaries=lambda articles: enrich_summaries_safe(articles, db),
+                excluded_delivery_urls=excluded_delivery_urls,
                 catch_up_enabled=False,
             )
-            fresh_articles = classification["fresh_articles"]
-            delivery_articles = fresh_articles
-            digest_articles, intl_coverage = prepare_international_delivery(
-                delivery_articles, international_config
-            )
-            enrich_summaries_safe(digest_articles, db)
-            importance_results = finalize_importance(
-                classify_articles(
-                    digest_articles,
-                    importance_rules_config,
-                    international_config=international_config,
-                ),
-                importance_rules_config,
-            )
-            election_annotations = _classify_and_persist_election2026(
-                digest_articles, db,
-                election2026_config, election2026_entities,
-            )
+            fresh_articles = delivery.fresh_articles
+            delivery_articles = delivery.delivery_articles
+            digest_articles = delivery.digest_articles
+            intl_coverage = delivery.international_coverage
+            importance_results = delivery.importance_results
+            election_annotations = collection.election_annotations
             translator = _build_international_translator()
             translation_articles = _translation_articles_for_delivery(
                 delivery_articles, intl_coverage
@@ -1227,11 +1305,11 @@ def main() -> None:
                     importance_results,
                     {
                         "fresh_articles": fresh_articles,
-                        "catch_up_urls": set(),
-                        "baseline_excluded": classification["baseline_excluded"],
-                        "stale_articles": classification["stale_articles"],
-                        "unknown_articles": classification["unknown_articles"],
-                        "future_articles": classification["future_articles"],
+                        "catch_up_urls": delivery.catch_up_urls,
+                        "baseline_excluded": delivery.baseline_excluded,
+                        "stale_articles": delivery.stale_articles,
+                        "unknown_articles": delivery.unknown_time_articles,
+                        "future_articles": delivery.future_articles,
                     },
                     now,
                     translator=notification_translator,
@@ -1271,7 +1349,7 @@ def main() -> None:
                     digest_articles,
                     tmp_reports,
                     generated_at=now,
-                    catch_up_urls=classification["catch_up_urls"],
+                    catch_up_urls=delivery.catch_up_urls,
                     importance_results=importance_results,
                     international_config=international_config,
                     international_coverage=intl_coverage,
@@ -1514,8 +1592,6 @@ def main() -> None:
 
             # Send to Feishu
             import os as _os2
-            from dotenv import load_dotenv as _ld
-            _ld()
             fs_id = _os2.getenv("FEISHU_APP_ID", "").strip()
             fs_secret = _os2.getenv("FEISHU_APP_SECRET", "").strip()
             fs_chat = _os2.getenv("FEISHU_CHAT_ID", "").strip()
@@ -1567,21 +1643,27 @@ def main() -> None:
         # history must not deliver old catch-up entries on its first run.
         source_baselines = _get_source_baselines(db, sources)
 
-        inserted, total, dup, failed, run_removed, hist_id_dup, filtered_count = collect_all(
+        collection = collect_all(
             sources, db, content_filter_config, military_config,
             health_store=health_store,
+            election_config=election2026_config,
+            election_entities=election2026_entities,
         )
+        inserted = collection.inserted_articles
+        total = collection.total_fetched
+        dup = collection.duplicate_count
+        failed = collection.failed_sources
+        run_removed = collection.run_removed
+        hist_id_dup = collection.historical_identity_duplicates
+        filtered_count = collection.filtered_count
         now = datetime.now(TAIPEI)
 
         notifier = create_notifier()
         international_translator = _build_international_translator()
 
         # Load catch-up configuration
-        catch_up_enabled = os.getenv("NEWS_CATCHUP_ENABLED", "false").strip().lower() in ("true", "1", "yes", "on")
-        try:
-            catch_up_max_minutes = int(os.getenv("NEWS_CATCHUP_MAX_MINUTES", "720").strip())
-        except (ValueError, AttributeError):
-            catch_up_max_minutes = 720
+        catch_up_enabled = settings.news_catchup_enabled
+        catch_up_max_minutes = settings.news_catchup_max_minutes
 
         # Log configuration
         logger.info(
@@ -1600,44 +1682,36 @@ def main() -> None:
             print(msg)
             return
 
-        # Freshness filter with catch-up support
+        # Freshness, international routing, enrichment and importance use the
+        # same core in production and dry-run.  Only their stateful callbacks
+        # differ (production DB versus temporary DB).
         db_existing = dup - run_removed
-        classification = _classify_delivery_articles(
-            inserted, source_baselines, now,
+        excluded_delivery_urls = {a.url for a in collection.filtered_from_delivery}
+        delivery = run_delivery_core(
+            inserted,
+            source_baselines,
+            now,
+            international_config=international_config,
+            importance_rules_config=importance_rules_config,
+            prepare_international_delivery=prepare_international_delivery,
+            enrich_summaries=lambda articles: enrich_summaries_safe(articles, db),
+            excluded_delivery_urls=excluded_delivery_urls,
             catch_up_enabled=catch_up_enabled,
             catch_up_max_minutes=catch_up_max_minutes,
         )
-        fresh_articles = classification['fresh_articles']
-        catch_up_eligible = classification['catch_up_eligible']
-        catch_up_urls = classification['catch_up_urls']
-        stale_articles = classification['stale_articles']
-        unknown_articles = classification['unknown_articles']
-        future_articles = classification['future_articles']
-        baseline_excluded = classification['baseline_excluded']
-
-        delivery_articles = fresh_articles + catch_up_eligible
-
-        # Filter irrelevant international stories and merge duplicate coverage
-        # before importance scoring so they cannot consume highlight slots.
-        digest_articles, intl_coverage = prepare_international_delivery(
-            delivery_articles, international_config
-        )
+        fresh_articles = delivery.fresh_articles
+        catch_up_eligible = delivery.catch_up_articles
+        catch_up_urls = delivery.catch_up_urls
+        stale_articles = delivery.stale_articles
+        unknown_articles = delivery.unknown_time_articles
+        future_articles = delivery.future_articles
+        baseline_excluded = delivery.baseline_excluded
+        delivery_articles = delivery.delivery_articles
+        digest_articles = delivery.digest_articles
+        intl_coverage = delivery.international_coverage
+        importance_results = delivery.importance_results
+        pre_cap_summary = delivery.pre_cap_importance_summary
         final_word_count = len(digest_articles)
-
-        # Only deliverable articles need enrichment. The summarizer separately
-        # enforces that explicit international access levels never fetch pages.
-        enrich_summaries_safe(digest_articles, db)
-
-        # Importance classification
-        importance_results = classify_articles(
-            digest_articles,
-            importance_rules_config,
-            international_config=international_config,
-        )
-        pre_cap_summary = importance_summary(importance_results)
-        importance_results = finalize_importance(
-            importance_results, importance_rules_config
-        )
         translation_articles = _translation_articles_for_delivery(
             delivery_articles, intl_coverage
         )
@@ -1734,10 +1808,7 @@ def main() -> None:
             # Auto-generate Word digest for the international-filtered article set
             try:
                 output_dir = project_root / "data" / "reports"
-                election_annotations = _classify_and_persist_election2026(
-                    digest_articles, db,
-                    election2026_config, election2026_entities,
-                )
+                election_annotations = collection.election_annotations
                 word_path = build_word_digest(
                     digest_articles, output_dir, generated_at=now,
                     catch_up_urls=catch_up_urls,
@@ -1756,13 +1827,11 @@ def main() -> None:
                 # Auto-send to Feishu if credentials are available
                 try:
                     import os as _os2
-                    from dotenv import load_dotenv as _ld
-                    _ld()
                     fs_id = _os2.getenv("FEISHU_APP_ID", "").strip()
                     fs_secret = _os2.getenv("FEISHU_APP_SECRET", "").strip()
                     fs_chat = _os2.getenv("FEISHU_CHAT_ID", "").strip()
                     if fs_id and fs_secret and fs_chat:
-                        if os.getenv("DISABLE_FEISHU_SEND", "").strip().lower() not in ("1", "true", "yes"):
+                        if not settings.disable_feishu_send:
                             send_document(
                                 word_path, fs_id, fs_secret, fs_chat,
                             )

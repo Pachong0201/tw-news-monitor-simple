@@ -58,7 +58,7 @@ def filter_fresh_articles(
 
     for article in articles:
         pub = article.published_at
-        if pub is None:
+        if pub is None or getattr(article, "published_at_precision", "exact") != "exact":
             result.unknown_time_articles.append(article)
             continue
         if pub.tzinfo is None:

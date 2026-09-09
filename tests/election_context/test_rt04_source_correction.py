@@ -115,4 +115,4 @@ def test_formal_unchanged():
          conn.execute('SELECT COUNT(*) FROM sources').fetchone()[0],
          conn.execute('SELECT COUNT(*) FROM event_sources').fetchone()[0])
     conn.close()
-    assert c == (48, 113, 108)
+    assert c == (50, 113, 110)

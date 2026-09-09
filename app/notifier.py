@@ -264,10 +264,6 @@ def create_notifier() -> Notifier:
     """
     import os
 
-    from dotenv import load_dotenv
-
-    load_dotenv()
-
     notifier_type = os.getenv("NOTIFIER", "console").strip().lower()
 
     if notifier_type == "feishu":

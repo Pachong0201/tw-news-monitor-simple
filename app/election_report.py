@@ -7,13 +7,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from dotenv import load_dotenv
-
 from app.election_fact_store import ElectionFactStore
 from app.election_classifier import ElectionClassifier
 from app.election_quality_check import ElectionQualityCheck
 from app.election_utils import format_taipei_date
 from app.deepseek_analysis import DeepSeekClient
+from app.settings import get_settings, load_environment
 
 TAIPEI = timezone(timedelta(hours=8))
 logger = logging.getLogger(__name__)
@@ -83,15 +82,16 @@ def build_fact_base(store: ElectionFactStore, news_conn, classifier: ElectionCla
     return facts
 
 def main():
+    load_environment(PROJECT_ROOT)
+    settings = get_settings(PROJECT_ROOT, load_env=False)
     parser = argparse.ArgumentParser(description='Election Report Generator')
     parser.add_argument('--date', type=str, default=format_taipei_date())
     parser.add_argument('--facts-only', action='store_true')
     parser.add_argument('--no-send', action='store_true')
     parser.add_argument('--force', action='store_true')
     parser.add_argument('--send-existing', action='store_true')
-    parser.add_argument('--db', type=str, default=str(NEWS_DB_PATH))
+    parser.add_argument('--db', type=str, default=str(settings.news_db_path))
     args = parser.parse_args()
-    load_dotenv()
     with open(CONFIG_PATH, encoding='utf-8') as f:
         watch_config = yaml.safe_load(f)
     style_config = load_style()

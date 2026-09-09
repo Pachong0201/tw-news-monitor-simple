@@ -14,27 +14,44 @@ continue - the summarizer is best-effort).
 from __future__ import annotations
 
 import os
-import socket
+import json
 import subprocess
 import sys
 import time
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 from pathlib import Path
+
+from app.cmd_gateway import SERVICE_NAME
+from app.settings import get_settings, load_environment
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PYTHON_EXE = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
 LOG_DIR = PROJECT_ROOT / "data" / "logs"
 STAMP = PROJECT_ROOT / "data" / "logs" / ".cmd_gateway_heal_stamp"
-HOST = os.getenv("CMD_GATEWAY_HOST", "127.0.0.1")
-PORT = int(os.getenv("CMD_GATEWAY_PORT", "8765"))
+load_environment(PROJECT_ROOT)
+SETTINGS = get_settings(PROJECT_ROOT, load_env=False)
+HOST = SETTINGS.cmd_gateway_host
+PORT = SETTINGS.cmd_gateway_port
 MODEL = os.getenv("CMD_GATEWAY_MODEL", "deepseek/deepseek-v4-flash")
 
 
-def _listening() -> bool:
+def _healthy() -> bool:
     try:
-        with socket.create_connection((HOST, PORT), timeout=1.0):
-            return True
-    except OSError:
+        request = Request(f"http://{HOST}:{PORT}/health", method="GET")
+        with urlopen(request, timeout=1.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        return (
+            payload.get("status") == "ok"
+            and payload.get("service") == SERVICE_NAME
+        )
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
         return False
+
+
+# Compatibility name for existing callers/tests; it now means a verified
+# Gateway health response rather than a bare TCP listener.
+_listening = _healthy
 
 
 def _recent_stamp(minutes: int) -> bool:
@@ -46,7 +63,7 @@ def _recent_stamp(minutes: int) -> bool:
 
 
 def main() -> int:
-    if _listening():
+    if _healthy():
         return 0
     heal_minutes = int(os.getenv("CMD_GATEWAY_SELF_HEAL_MINUTES", "30"))
     if _recent_stamp(heal_minutes):
@@ -69,21 +86,27 @@ def main() -> int:
         "--port", str(PORT),
         "--model", MODEL,
     ]
+    if SETTINGS.cmd_gateway_allow_non_loopback:
+        argv.append("--allow-non-loopback")
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
     try:
-        subprocess.Popen(
-            argv,
-            cwd=str(PROJECT_ROOT),
-            creationflags=creationflags,
-            close_fds=True,
-        )
+        with log_path.open("a", encoding="utf-8") as log_file:
+            subprocess.Popen(
+                argv,
+                cwd=str(PROJECT_ROOT),
+                creationflags=creationflags,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
+            )
     except OSError as exc:
         print(f"[cmd_gateway] failed to start gateway: {exc}", file=sys.stderr)
         return 1
     # Give it a moment, then verify.
     for _ in range(10):
         time.sleep(0.5)
-        if _listening():
+        if _healthy():
             print(f"[cmd_gateway] started on {HOST}:{PORT} (model={MODEL})")
             return 0
     print(f"[cmd_gateway] launch attempted but not yet listening on "

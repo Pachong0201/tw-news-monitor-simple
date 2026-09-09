@@ -139,13 +139,15 @@ class TestCollectAllIntegration:
             "id": "s1", "name": "測試", "type": "rss",
             "category": "economy", "url": "https://example.com/rss",
         }
+        config = load_content_filter()
+        config["mode"] = "drop_before_save"
         db = MagicMock()
         db.get_all_article_urls.return_value = []
         db.save_articles.side_effect = lambda arts: list(arts)
 
         with patch.object(main_mod, "COLLECTOR_MAP", {"rss": FakeCollector}):
             inserted, total, dup, failed, run_removed, hist_id_dup, filtered = (
-                main_mod.collect_all([source], db, load_content_filter())
+                main_mod.collect_all([source], db, config)
             )
 
         assert [a.title for a in inserted] == ["主計總處上修GDP"]

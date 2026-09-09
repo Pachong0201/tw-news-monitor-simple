@@ -24,5 +24,7 @@ class ElectionAnnotation:
     confidence: int = 0
     # 命中的强/辅助词（审计用）
     matched_terms: list[str] = field(default_factory=list)
+    # 兼容单一 event_type 的次级事件标签。
+    event_tags: list[str] = field(default_factory=list)
     # 判定原因：matched / review / rejected:<负向词>
     reason: str = ""
