@@ -25,8 +25,16 @@ def _pid_alive(pid: int) -> bool:
             return False
         ctypes.windll.kernel32.CloseHandle(handle)
         return True
-    except Exception:  # noqa: BLE001
-        # 无法确认时按存活处理，保证安全
+    except Exception:  # noqa: BLE001 - no Windows API on Linux/CI
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except Exception:  # noqa: BLE001
+            # 无法确认时按存活处理，保证安全
+            return True
         return True
 
 

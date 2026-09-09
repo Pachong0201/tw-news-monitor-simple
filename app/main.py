@@ -43,7 +43,11 @@ from .importance import (
     select_highlights,
     validate_rules_config,
 )
-from .article_identity import article_identity_key, deduplicate_articles_by_identity
+from .article_identity import (
+    article_identity_key,
+    deduplicate_articles_by_identity,
+    prefer_richer_article,
+)
 from .international import (
     dedupe_international_for_digest,
     filter_international,
@@ -279,10 +283,11 @@ def validate_sources_config(sources: list[dict], collector_map: dict) -> None:
 def deduplicate_articles_by_url(articles):
     """Deduplicate by normalized URL within the same run.
 
-    Keeps first occurrence, maintains order. O(n) time.
-    Returns (unique_articles, duplicate_articles).
+    When the same URL appears more than once, the richer metadata copy is
+    kept (exact > date_only > unknown, then published_at/summary/title).
+    Keeps first occurrence on exact ties, maintaining order.
     """
-    seen = set()
+    seen = {}
     unique = []
     dups = []
     for article in articles:
@@ -291,9 +296,19 @@ def deduplicate_articles_by_url(articles):
             unique.append(article)
             continue
         if url in seen:
-            dups.append(article)
+            existing = seen[url]
+            winner = prefer_richer_article(existing, article)
+            if winner is not existing:
+                dups.append(existing)
+                seen[url] = winner
+                for i, item in enumerate(unique):
+                    if item is existing:
+                        unique[i] = winner
+                        break
+            else:
+                dups.append(article)
         else:
-            seen.add(url)
+            seen[url] = article
             unique.append(article)
     return unique, dups
 
@@ -763,6 +778,26 @@ def collect_all(
     else:
         candidates = filter_result.kept + filter_result.blocked
 
+    # Persist delivery eligibility on every saved article.  Articles blocked
+    # by content_filter or military noise in exclude_from_delivery mode are
+    # stored but marked ineligible so export/backfill/Word later honor the
+    # same business rule without relying on an in-memory URL set.
+    military_blocked_urls = {a.url for a in military_from_delivery}
+    content_blocked_urls = {a.url for a in filter_result.blocked}
+    content_filter_version = str(
+        (content_filter_config or {}).get("filter_version") or "current"
+    )
+    military_filter_version = str((military_config or {}).get("filter_version") or "current")
+    for article in candidates:
+        if article.url in military_blocked_urls:
+            article.delivery_eligible = False
+            article.filter_reason = "military_noise"
+            article.filter_version = military_filter_version
+        elif article.url in content_blocked_urls:
+            article.delivery_eligible = False
+            article.filter_reason = "content_filter"
+            article.filter_version = content_filter_version
+
     inserted = db.save_articles(candidates)
 
     election_annotations = _classify_and_persist_election2026(
@@ -837,11 +872,11 @@ def _classify_delivery_articles(
         catch_up_enabled=catch_up_enabled,
         catch_up_max_minutes=catch_up_max_minutes,
     )
-    fresh_articles = freshness.fresh_articles
-    catch_up_articles = freshness.catch_up_articles
-    stale_articles = freshness.stale_articles
-    unknown_articles = freshness.unknown_time_articles
-    future_articles = freshness.future_time_articles
+    fresh_articles = list(freshness.fresh_articles)
+    catch_up_articles = list(freshness.catch_up_articles)
+    stale_articles = list(freshness.stale_articles)
+    unknown_articles = list(freshness.unknown_time_articles)
+    future_articles = list(freshness.future_time_articles)
     catch_up_eligible = [
         a for a in catch_up_articles
         if source_baselines.get(a.source_id, 0) > 0
@@ -850,16 +885,27 @@ def _classify_delivery_articles(
         a for a in catch_up_articles
         if source_baselines.get(a.source_id, 0) == 0
     ]
-    stale_articles = stale_articles + baseline_excluded
+    date_only_today = list(freshness.date_only_today_articles)
+    date_only_eligible = [
+        a for a in date_only_today
+        if source_baselines.get(a.source_id, 0) > 0
+    ]
+    date_only_baseline_excluded = [
+        a for a in date_only_today
+        if source_baselines.get(a.source_id, 0) == 0
+    ]
+    stale_articles = stale_articles + baseline_excluded + date_only_baseline_excluded
     catch_up_urls = {a.url for a in catch_up_eligible}
     return {
         'fresh_articles': fresh_articles,
+        'date_only_eligible': date_only_eligible,
         'catch_up_eligible': catch_up_eligible,
         'catch_up_urls': catch_up_urls,
         'stale_articles': stale_articles,
         'unknown_articles': unknown_articles,
         'future_articles': future_articles,
         'baseline_excluded': baseline_excluded,
+        'date_only_today': date_only_today,
     }
 
 
@@ -1172,14 +1218,16 @@ def main() -> None:
         if missing:
             print(f"\u8bf7\u8bbe\u7f6e\u73af\u5883\u53d8\u91cf: {', '.join(missing)}")
             return
-        db_path = project_root / "data" / "news.db"
+        db_path = settings.news_db_path
         if not db_path.exists():
             print("\u6570\u636e\u5e93\u4e0d\u5b58\u5728\uff0c\u8bf7\u5148\u8fd0\u884c python -m app.main --bootstrap")
             return
         db = Database(db_path)
         db.connect()
         now = datetime.now(TAIPEI)
-        articles = db.get_articles_since(datetime(2000, 1, 1))
+        articles = db.get_articles_since(
+            datetime(2000, 1, 1), eligible_only=True
+        )
         articles = articles[-10:] if len(articles) > 10 else articles
         if not articles:
             print("\u6570\u636e\u5e93\u4e2d\u6682\u65e0\u65b0\u95fb\u3002")
@@ -1218,7 +1266,7 @@ def main() -> None:
             print(f"诊断数据库不存在: {diag_db}")
             print("请将备份数据库复制到配置的 NEWS_DB_PATH/DATABASE_PATH")
             return
-        db_obj = Database(diag_db)
+        db_obj = Database(diag_db, read_only=True)
         db_obj.connect()
         print()
         print("运行环境：development")
@@ -1233,6 +1281,27 @@ def main() -> None:
         print(f"诊断CSV: {out_dir / 'latest_collection.csv'}")
         print(f"诊断报告: {out_dir / 'latest_diagnosis.md'}")
         db_obj.close()
+        return
+
+    # ---- Diagnose File (offline replay; read-only for production DB) ----
+    if args.diagnose_file:
+        json_path = Path(args.diagnose_file)
+        if not json_path.exists():
+            print(f"诊断文件不存在: {json_path}")
+            return
+        out_dir = project_root / "data" / "diagnostics"
+        from .diagnose import run_diagnosis_from_file
+
+        db_obj = None
+        if settings.news_db_path.exists():
+            db_obj = Database(settings.news_db_path, read_only=True)
+            db_obj.connect()
+        try:
+            run_diagnosis_from_file(json_path, db_obj, out_dir)
+            print(f"诊断回放完成: {out_dir / 'latest_diagnosis.md'}")
+        finally:
+            if db_obj is not None:
+                db_obj.close()
         return
 
     # ---- Dry Run ------------------------------------------------------
@@ -1426,7 +1495,9 @@ def main() -> None:
         db = Database(db_path)
         db.connect()
         now = datetime.now(TAIPEI)
-        articles = db.get_articles_since(datetime(2000, 1, 1))
+        articles = db.get_articles_since(
+            datetime(2000, 1, 1), eligible_only=True
+        )
         if len(articles) > args.export_word:
             articles = articles[-args.export_word:]
         if not articles:
@@ -1524,7 +1595,8 @@ def main() -> None:
             rows = db.conn.execute(
                 "SELECT source_id, source_name, category, title, url, "
                 "published_at, fetched_at, position, summary, summary_attempted_at "
-                "FROM articles WHERE fetched_at >= ? AND fetched_at <= ? "
+                "FROM articles WHERE delivery_eligible = 1 "
+                "AND fetched_at >= ? AND fetched_at <= ? "
                 "ORDER BY published_at DESC",
                 (batch_start.isoformat(), batch_end.isoformat()),
             ).fetchall()

@@ -23,3 +23,7 @@ class Article:
     access_level: str | None = None
     # 时间精度：exact / date_only / unknown。旧对象默认 exact，保持兼容。
     published_at_precision: str = "exact"
+    # 持久化交付资格：0 表示“存而不推”（content_filter / military noise 排除）。
+    delivery_eligible: bool = True
+    filter_reason: str | None = None
+    filter_version: str | None = None

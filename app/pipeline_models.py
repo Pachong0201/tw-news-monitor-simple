@@ -66,6 +66,8 @@ class DeliveryResult:
     digest_articles: list = field(default_factory=list)
     fresh_articles: list = field(default_factory=list)
     catch_up_articles: list = field(default_factory=list)
+    date_only_today_articles: list = field(default_factory=list)
+    date_only_baseline_excluded: list = field(default_factory=list)
     stale_articles: list = field(default_factory=list)
     unknown_time_articles: list = field(default_factory=list)
     future_articles: list = field(default_factory=list)

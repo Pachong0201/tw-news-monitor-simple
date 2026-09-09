@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / 'config' / 'election_watch.yaml'
 DB_PATH = PROJECT_ROOT / 'data' / 'election_watch.db'
-NEWS_DB_PATH = PROJECT_ROOT / 'data' / 'news.db'
 
 def load_news_db(db_path: str | Path):
     import sqlite3

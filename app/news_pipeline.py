@@ -55,9 +55,25 @@ def run_delivery_core(
         for article in freshness.catch_up_articles
         if source_baselines.get(article.source_id, 0) == 0
     ]
-    stale_articles = list(freshness.stale_articles) + baseline_excluded
+    date_only_today_articles = [
+        article for article in freshness.date_only_today_articles
+        if article.url not in excluded_urls
+    ]
+    date_only_eligible = [
+        article for article in date_only_today_articles
+        if source_baselines.get(article.source_id, 0) > 0
+    ]
+    date_only_baseline_excluded = [
+        article for article in date_only_today_articles
+        if source_baselines.get(article.source_id, 0) == 0
+    ]
+    stale_articles = (
+        list(freshness.stale_articles)
+        + baseline_excluded
+        + date_only_baseline_excluded
+    )
     catch_up_urls = {article.url for article in catch_up_articles}
-    delivery_articles = fresh_articles + catch_up_articles
+    delivery_articles = fresh_articles + catch_up_articles + date_only_eligible
 
     digest_articles, international_coverage = prepare_international_delivery(
         delivery_articles, international_config
@@ -78,6 +94,8 @@ def run_delivery_core(
         digest_articles=digest_articles,
         fresh_articles=fresh_articles,
         catch_up_articles=catch_up_articles,
+        date_only_today_articles=date_only_today_articles,
+        date_only_baseline_excluded=date_only_baseline_excluded,
         stale_articles=stale_articles,
         unknown_time_articles=list(freshness.unknown_time_articles),
         future_articles=list(freshness.future_time_articles),

@@ -34,9 +34,14 @@ def read_articles(path, hours, now=None):
             raise ValueError("news.db articles schema is missing required columns")
         fields = sorted(required | ({"summary"} & columns))
         articles, ids = [], {}
+        eligible_only = "delivery_eligible" in columns
+        sql = "SELECT " + ",".join(fields) + " FROM articles"
+        if eligible_only:
+            sql += " WHERE delivery_eligible = 1"
+        sql += " ORDER BY id"
         # Parse timestamps in Python: production contains both naive and offset ISO
         # strings, for which SQLite string comparison gives incorrect window edges.
-        for row in conn.execute("SELECT " + ",".join(fields) + " FROM articles ORDER BY id"):
+        for row in conn.execute(sql):
             try:
                 published = datetime.fromisoformat(row["published_at"]) if row["published_at"] else None
                 fetched = datetime.fromisoformat(row["fetched_at"])
@@ -57,7 +62,7 @@ def read_articles(path, hours, now=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="只读 news.db，生成涉台军武事件简报（不调用网络或 LLM）")
     parser.add_argument("--hours", type=float, default=24)
-    parser.add_argument("--db", type=Path, default=ROOT / "data/news.db")
+    parser.add_argument("--db", type=Path, default=None)
     parser.add_argument("--config", type=Path, default=DEFAULT_RULES_PATH)
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     parser.add_argument("--output", type=Path, help="不指定则输出到终端")
@@ -65,6 +70,10 @@ def main(argv=None):
     parser.add_argument("--word-dir", type=Path, help="同时生成包含事件栏目的现有 Word 简版")
     args = parser.parse_args(argv)
     try:
+        if args.db is None:
+            from ..settings import get_settings, load_environment
+            load_environment(ROOT)
+            args.db = get_settings(ROOT, load_env=False).news_db_path
         if args.output:
             target = args.output.resolve()
             protected = {args.db.resolve(), args.config.resolve(), DEFAULT_RULES_PATH.resolve()}

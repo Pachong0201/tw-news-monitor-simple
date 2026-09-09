@@ -11,6 +11,7 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 class FreshnessResult:
     fresh_articles: list[Article] = field(default_factory=list)
     catch_up_articles: list[Article] = field(default_factory=list)
+    date_only_today_articles: list[Article] = field(default_factory=list)
     stale_articles: list[Article] = field(default_factory=list)
     unknown_time_articles: list[Article] = field(default_factory=list)
     future_time_articles: list[Article] = field(default_factory=list)
@@ -58,9 +59,28 @@ def filter_fresh_articles(
 
     for article in articles:
         pub = article.published_at
-        if pub is None or getattr(article, "published_at_precision", "exact") != "exact":
+        precision = getattr(article, "published_at_precision", "exact") or "exact"
+        if pub is None or precision == "unknown":
             result.unknown_time_articles.append(article)
             continue
+
+        if precision == "date_only":
+            # date-only articles carry no fake time.  If the date is today they
+            # are delivery candidates; older dates are stale and never delivered.
+            if pub.tzinfo is None:
+                pub_taipei = pub.replace(tzinfo=TAIPEI)
+            else:
+                pub_taipei = pub.astimezone(TAIPEI)
+            run_date = run_started_at.date()
+            if pub_taipei.date() == run_date:
+                result.date_only_today_articles.append(article)
+            elif pub_taipei.date() < run_date:
+                result.stale_articles.append(article)
+            else:
+                result.future_time_articles.append(article)
+            continue
+
+        # exact precision: unknown/naive exact timestamps remain unknown.
         if pub.tzinfo is None:
             result.unknown_time_articles.append(article)
             continue

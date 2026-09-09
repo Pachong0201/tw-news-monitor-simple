@@ -9,7 +9,7 @@ from .article_identity import article_identity_key
 from .models import Article
 
 logger = logging.getLogger(__name__)
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 IDENTITY_BACKFILL_BATCH = 500
 
 
@@ -96,7 +96,10 @@ class Database:
                     summary_attempted_at TEXT,
                     section TEXT,
                     language TEXT,
-                    access_level TEXT
+                    access_level TEXT,
+                    delivery_eligible INTEGER NOT NULL DEFAULT 1,
+                    filter_reason TEXT,
+                    filter_version TEXT
                 )
                 """
             )
@@ -146,19 +149,28 @@ class Database:
                     "published_at_precision",
                     "published_at_precision TEXT NOT NULL DEFAULT 'exact'",
                 ),
+                (
+                    "delivery_eligible",
+                    "delivery_eligible INTEGER NOT NULL DEFAULT 1",
+                ),
+                ("filter_reason", "filter_reason TEXT"),
+                ("filter_version", "filter_version TEXT"),
             ):
                 if col not in article_columns:
                     self.conn.execute(f"ALTER TABLE articles ADD COLUMN {ddl}")
+
+            # Identity backfill runs after the identity index exists so each
+            # collision/query uses an index instead of a full table scan.
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_articles_identity_key "
+                "ON articles(identity_key)"
+            )
 
             self._ensure_topics_schema()
             self._backfill_identity_keys()
 
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_articles_url ON articles(url)"
-            )
-            self.conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_articles_identity_key "
-                "ON articles(identity_key)"
             )
             self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_articles_fetched_at ON articles(fetched_at)"
@@ -308,6 +320,9 @@ class Database:
             article.section,
             article.language,
             article.access_level,
+            1 if getattr(article, "delivery_eligible", True) else 0,
+            getattr(article, "filter_reason", None),
+            getattr(article, "filter_version", None),
         )
 
     _ARTICLE_INSERT_SQL = """
@@ -315,8 +330,9 @@ class Database:
             (source_id, source_name, category, title, url, identity_key,
              published_at, published_at_precision, fetched_at, position,
              summary, summary_source, summary_attempted_at, section,
-             language, access_level)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             language, access_level, delivery_eligible, filter_reason,
+             filter_version)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     def save_article(self, article: Article) -> None:
@@ -350,20 +366,29 @@ class Database:
             language=row[14],
             access_level=row[15],
             published_at_precision=row[7] or "exact",
+            delivery_eligible=bool(row[16]) if row[16] is not None else True,
+            filter_reason=row[17],
+            filter_version=row[18],
         )
 
     _ARTICLE_SELECT = (
         "SELECT source_id, source_name, category, title, url, identity_key, "
         "published_at, published_at_precision, fetched_at, position, summary, "
-        "summary_source, summary_attempted_at, section, language, access_level "
+        "summary_source, summary_attempted_at, section, language, access_level, "
+        "delivery_eligible, filter_reason, filter_version "
         "FROM articles"
     )
 
-    def get_articles_since(self, time: datetime) -> list[Article]:
+    def get_articles_since(
+        self, time: datetime, *, eligible_only: bool = False
+    ) -> list[Article]:
+        sql = self._ARTICLE_SELECT + " WHERE fetched_at >= ?"
+        params: list = [time.isoformat()]
+        if eligible_only:
+            sql += " AND delivery_eligible = 1"
         rows = self.conn.execute(
-            self._ARTICLE_SELECT + " WHERE fetched_at >= ? "
-            "ORDER BY category, position, published_at",
-            (time.isoformat(),),
+            sql + " ORDER BY category, position, published_at",
+            params,
         ).fetchall()
         return [self._row_to_article(row) for row in rows]
 
@@ -564,45 +589,58 @@ class Database:
             "metadata": metadata,
         }])
 
-    def save_topics(self, rows: list[dict]) -> int:
-        """Upsert multiple topic annotations in one transaction."""
+    @staticmethod
+    def _topic_values(row: dict) -> tuple:
+        created_at = row.get("created_at") or datetime.now()
+        metadata = row.get("metadata")
+        if metadata is None and row.get("metadata_json") is not None:
+            metadata_json = row.get("metadata_json")
+        else:
+            metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        return (
+            row["url"],
+            row.get("topic", "election_2026_local"),
+            row.get("scope"),
+            row.get("region"),
+            json.dumps(row.get("regions") or [], ensure_ascii=False),
+            row.get("event_type"),
+            row.get("confidence"),
+            row.get("source_type"),
+            metadata_json,
+            created_at.isoformat() if isinstance(created_at, datetime) else str(created_at),
+        )
+
+    def save_topics(self, rows: list[dict], *, update_existing: bool = True) -> int:
+        """Upsert (default) or insert-only topic annotations in one transaction.
+
+        Normal ingestion keeps ``update_existing=True`` so a corrected
+        annotation can update an existing row.  Backfill uses
+        ``update_existing=False`` so historical annotations are never
+        overwritten by a re-run.
+        """
         if not rows:
             return 0
-        values = []
-        for row in rows:
-            created_at = row.get("created_at") or datetime.now()
-            metadata = row.get("metadata")
-            if metadata is None and row.get("metadata_json") is not None:
-                metadata_json = row.get("metadata_json")
-            else:
-                metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
-            values.append((
-                row["url"],
-                row.get("topic", "election_2026_local"),
-                row.get("scope"),
-                row.get("region"),
-                json.dumps(row.get("regions") or [], ensure_ascii=False),
-                row.get("event_type"),
-                row.get("confidence"),
-                row.get("source_type"),
-                metadata_json,
-                created_at.isoformat() if isinstance(created_at, datetime) else str(created_at),
-            ))
+        values = [self._topic_values(row) for row in rows]
+        if update_existing:
+            conflict_sql = """
+                ON CONFLICT(url, topic) DO UPDATE SET
+                    scope = excluded.scope,
+                    region = excluded.region,
+                    regions_json = excluded.regions_json,
+                    event_type = excluded.event_type,
+                    confidence = excluded.confidence,
+                    source_type = excluded.source_type,
+                    metadata_json = excluded.metadata_json,
+                    created_at = excluded.created_at
+            """
+        else:
+            conflict_sql = "ON CONFLICT(url, topic) DO NOTHING"
         sql = """
             INSERT INTO news_topics
                 (url, topic, scope, region, regions_json, event_type,
                  confidence, source_type, metadata_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(url, topic) DO UPDATE SET
-                scope = excluded.scope,
-                region = excluded.region,
-                regions_json = excluded.regions_json,
-                event_type = excluded.event_type,
-                confidence = excluded.confidence,
-                source_type = excluded.source_type,
-                metadata_json = excluded.metadata_json,
-                created_at = excluded.created_at
-        """
+        """ + conflict_sql
         was_in_transaction = self.conn.in_transaction
         try:
             if not was_in_transaction:
@@ -615,6 +653,21 @@ class Database:
                 self.conn.rollback()
             raise
         return len(values)
+
+    def insert_missing_topics(self, rows: list[dict]) -> int:
+        """Insert only missing (url, topic) rows; never update existing rows.
+
+        Returns the number of rows actually inserted.  Used by Topic Backfill
+        so a second run is truly no-op for existing annotations.
+        """
+        if not rows:
+            return 0
+        before = self.conn.total_changes
+        try:
+            self.save_topics(rows, update_existing=False)
+        except Exception:
+            raise
+        return self.conn.total_changes - before
 
     @staticmethod
     def _topic_row_to_dict(row) -> dict:

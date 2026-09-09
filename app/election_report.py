@@ -21,7 +21,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / 'config' / 'election_watch.yaml'
 STYLE_PATH = PROJECT_ROOT / 'config' / 'election_analysis_style.yaml'
 DB_PATH = PROJECT_ROOT / 'data' / 'election_watch.db'
-NEWS_DB_PATH = PROJECT_ROOT / 'data' / 'news.db'
 
 import yaml
 

@@ -159,7 +159,12 @@ def build_word_digest(
         a for a in articles
         if is_official_source(a.source_id) and a.url not in military_topic_urls
     ]
-    official_count = len(official_articles)
+    # Top-level statistics must stay self-consistent: official-military
+    # sources are official even when their article is routed to 军武动态.
+    official_count = len([
+        a for a in articles
+        if is_official_source(a.source_id)
+    ])
 
     regular_media_articles = [
         a for a in media_articles if a.url not in military_topic_urls

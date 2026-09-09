@@ -95,8 +95,11 @@ def filter_mode(config: dict | None) -> str:
         return "disabled"
     mode = str(config.get("mode") or "drop_before_save").strip().lower()
     if mode not in FILTER_MODES:
-        logger.warning("Unknown content filter mode %r; using drop_before_save", mode)
-        return "drop_before_save"
+        logger.warning(
+            "Unknown content filter mode %r; using safe fallback exclude_from_delivery",
+            mode,
+        )
+        return "exclude_from_delivery"
     return mode
 
 

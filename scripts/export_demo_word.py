@@ -19,13 +19,16 @@ from app.database import Database
 from app.international import is_international_media, load_international_config
 from app.word_digest import build_word_digest
 from app.time_utils import TAIPEI
+from app.settings import get_settings, load_environment
 
 DEMO_INTL_MAX = 14        # 国际媒体最多收录条数（Reuters+FT 合计）
 DOMESTIC_MAX = 34         # 台湾媒体条数（保持简报主体以台湾为主）
 
 
 def main() -> None:
-    db_path = PROJECT_ROOT / "data" / "news.db"
+    load_environment(PROJECT_ROOT)
+    settings = get_settings(PROJECT_ROOT, load_env=False)
+    db_path = settings.news_db_path
     db = Database(db_path)
     db.connect()
 
@@ -35,7 +38,9 @@ def main() -> None:
     # 关闭相关性过滤不影响 build_word_digest；这里只是读取配置结构。
     # （build_word_digest 只看 enabled + tier1 列表，不做相关性过滤。）
 
-    all_articles = db.get_articles_since(datetime(2000, 1, 1))
+    all_articles = db.get_articles_since(
+        datetime(2000, 1, 1), eligible_only=True
+    )
     # 按入库时间倒序（fetched_at 可能为 naive，统一视为台北时间比较）
     def _ts(a):
         dt = a.fetched_at or datetime.min
