@@ -48,6 +48,7 @@ class Settings:
     log_level: str
     news_catchup_enabled: bool
     news_catchup_max_minutes: int
+    date_only_recovery_max_gap_hours: int
     disable_feishu_send: bool
     cmd_gateway_host: str
     cmd_gateway_port: int
@@ -80,6 +81,9 @@ def get_settings(
         log_level=os.getenv("LOG_LEVEL", "INFO").strip().upper() or "INFO",
         news_catchup_enabled=_bool_env("NEWS_CATCHUP_ENABLED", False),
         news_catchup_max_minutes=max(1, _int_env("NEWS_CATCHUP_MAX_MINUTES", 720)),
+        date_only_recovery_max_gap_hours=max(
+            1, _int_env("DATE_ONLY_RECOVERY_MAX_GAP_HOURS", 3)
+        ),
         disable_feishu_send=_bool_env("DISABLE_FEISHU_SEND", False),
         cmd_gateway_host=os.getenv("CMD_GATEWAY_HOST", "127.0.0.1").strip() or "127.0.0.1",
         cmd_gateway_port=max(1, _int_env("CMD_GATEWAY_PORT", 8765)),

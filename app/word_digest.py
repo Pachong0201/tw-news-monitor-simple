@@ -17,7 +17,7 @@ from .source_registry import is_official_source, get_source_info, get_official_s
 from .international import display_name, is_international_media
 from .international_translation import TranslationResult, translate_article
 from .summarizer import clean_summary_text
-from .time_utils import TAIPEI
+from .time_utils import TAIPEI, format_article_publish_time
 from .election2026.classifier import classify_article as classify_election_article
 from .election2026.models import ElectionAnnotation
 
@@ -31,6 +31,18 @@ CATEGORY_NAMES = {
 CATEGORY_ORDER = ["politics", "economy", "military", "international", "religion"]
 CATEGORY_NUMBERS = ["（一）", "（二）", "（三）", "（四）", "（五）"]
 HYPERLINK_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+
+def _add_article_publish_time(doc, article, label: str = "发布时间") -> None:
+    """Render the one canonical precision-aware publish time line."""
+    text = format_article_publish_time(article)
+    if not text:
+        return
+    if label != "发布时间" and text.startswith("发布时间："):
+        text = label + text[len("发布时间："):]
+    paragraph = doc.add_paragraph()
+    run = paragraph.add_run(text)
+    run.font.size = Pt(10)
+    run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
 
 def build_word_digest(
     articles: list[Article],
@@ -296,11 +308,7 @@ def build_word_digest(
                 run.font.size = Pt(10)
                 run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
                 
-                if article.published_at:
-                    p = doc.add_paragraph()
-                    run = p.add_run(f"发布时间：{article.published_at.strftime('%Y-%m-%d %H:%M')}")
-                    run.font.size = Pt(10)
-                    run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+                _add_article_publish_time(doc, article)
                 
                 p = doc.add_paragraph()
                 if article.url in catch_up_urls:
@@ -407,11 +415,7 @@ def build_word_digest(
                 run.font.size = Pt(10)
                 run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
                 
-                if article.published_at:
-                    p = doc.add_paragraph()
-                    run = p.add_run(f"发布时间：{article.published_at.strftime('%Y-%m-%d %H:%M')}")
-                    run.font.size = Pt(10)
-                    run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+                _add_article_publish_time(doc, article)
                 
                 p = doc.add_paragraph()
                 if article.url in catch_up_urls:
@@ -497,14 +501,7 @@ def build_word_digest(
                 run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
                 run.italic = True
 
-                if article.published_at:
-                    published_at = article.published_at
-                    if published_at.tzinfo is not None:
-                        published_at = published_at.astimezone(TAIPEI)
-                    p = doc.add_paragraph()
-                    run = p.add_run(f"发布时间（Asia/Taipei）：{published_at.strftime('%Y-%m-%d %H:%M')}")
-                    run.font.size = Pt(10)
-                    run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+                _add_article_publish_time(doc, article, label="发布时间（Asia/Taipei）")
 
                 if translation.status == "translated":
                     translated_summary = translation.cn_summary or "未提供中文摘要。"
@@ -753,11 +750,7 @@ def _render_media_item(
     run.font.size = Pt(10)
     run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
 
-    if article.published_at:
-        p = doc.add_paragraph()
-        run = p.add_run(f"发布时间：{article.published_at.strftime('%Y-%m-%d %H:%M')}")
-        run.font.size = Pt(10)
-        run.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+    _add_article_publish_time(doc, article)
 
     p = doc.add_paragraph()
     if article.url in catch_up_urls:

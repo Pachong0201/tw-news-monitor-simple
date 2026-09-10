@@ -27,10 +27,18 @@ def run_delivery_core(
     prepare_international_delivery: Callable,
     enrich_summaries: Callable[[list], None],
     excluded_delivery_urls: Iterable[str] = (),
+    source_continuity: dict[str, bool] | None = None,
     catch_up_enabled: bool = False,
     catch_up_max_minutes: int = 720,
 ) -> DeliveryResult:
-    """Run the common freshness/enrichment/importance delivery path."""
+    """Run the common freshness/enrichment/importance delivery path.
+
+    ``source_continuity`` distinguishes a continuously running source from a
+    source that just recovered after a long outage.  Date-only articles are
+    only delivery candidates for continuous sources; exact articles continue
+    to use the normal freshness/catch-up rules regardless.
+    """
+    continuity = source_continuity or {}
 
     excluded_urls = set(excluded_delivery_urls)
     freshness = filter_fresh_articles(
@@ -62,10 +70,12 @@ def run_delivery_core(
     date_only_eligible = [
         article for article in date_only_today_articles
         if source_baselines.get(article.source_id, 0) > 0
+        and bool(continuity.get(article.source_id, False))
     ]
     date_only_baseline_excluded = [
         article for article in date_only_today_articles
         if source_baselines.get(article.source_id, 0) == 0
+        or not bool(continuity.get(article.source_id, False))
     ]
     stale_articles = (
         list(freshness.stale_articles)

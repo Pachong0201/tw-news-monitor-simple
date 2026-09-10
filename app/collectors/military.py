@@ -30,6 +30,36 @@ TIME_ONLY_RE = re.compile(r"(?<!\d)(\d{1,2}:\d{2})(?!\d)")
 ROC_DATE_RE = re.compile(r"民[國国]\s*(\d{2,3})年\s*(\d{1,2})月\s*(\d{1,2})日")
 
 
+def _precision_rank(precision: str | None) -> int:
+    value = str(precision or "unknown").strip().lower()
+    if value == "exact":
+        return 3
+    if value == "date_only":
+        return 2
+    return 1
+
+
+def _prefer_richer_article(a: Article, b: Article) -> Article:
+    """Local collector-level richer-metadata choice (avoids import cycle)."""
+    pa = _precision_rank(getattr(a, "published_at_precision", "exact"))
+    pb = _precision_rank(getattr(b, "published_at_precision", "exact"))
+    if pa != pb:
+        return a if pa > pb else b
+    a_pub = getattr(a, "published_at", None) is not None
+    b_pub = getattr(b, "published_at", None) is not None
+    if a_pub != b_pub:
+        return a if a_pub else b
+    a_summary = str(getattr(a, "summary", "") or "").strip()
+    b_summary = str(getattr(b, "summary", "") or "").strip()
+    if bool(a_summary) != bool(b_summary):
+        return a if a_summary else b
+    a_title = str(getattr(a, "title", "") or "").strip()
+    b_title = str(getattr(b, "title", "") or "").strip()
+    if bool(a_title) != bool(b_title):
+        return a if a_title else b
+    return a
+
+
 def _now_taipei() -> datetime:
     return datetime.now(TAIPEI)
 
@@ -237,8 +267,8 @@ class NownewsMilitaryCollector(BaseCollector):
         max_pages = max(1, min(int(self.source.get("max_pages", self.DEFAULT_MAX_PAGES)), 10))
         stop_after = max(1, int(self.source.get("stop_after_hours", self.DEFAULT_STOP_AFTER_HOURS)))
         cutoff = now - timedelta(hours=stop_after)
-        articles: list[Article] = []
-        seen: set[str] = set()
+        best_by_url: dict[str, Article] = {}
+        ordered_urls: list[str] = []
         first_status = 0
         first_schema_valid = False
         reached_old = False
@@ -265,16 +295,22 @@ class NownewsMilitaryCollector(BaseCollector):
                 if article.published_at is not None and article.published_at < cutoff:
                     reached_old = True
                     break
-                if article.url in seen:
-                    continue
-                seen.add(article.url)
-                article.position = len(articles) + 1
-                articles.append(article)
-                if len(articles) >= self.MAX_ITEMS:
-                    break
-            if reached_old or len(articles) >= self.MAX_ITEMS or not page_articles:
+                key = article.url
+                if key in best_by_url:
+                    # A later banner/list/page entry may carry richer metadata
+                    # (especially an exact time replacing a banner unknown).
+                    best_by_url[key] = _prefer_richer_article(
+                        best_by_url[key], article
+                    )
+                elif len(ordered_urls) < self.MAX_ITEMS:
+                    best_by_url[key] = article
+                    ordered_urls.append(key)
+            if reached_old or len(ordered_urls) >= self.MAX_ITEMS or not page_articles:
                 break
 
+        articles = [best_by_url[url] for url in ordered_urls]
+        for index, article in enumerate(articles, 1):
+            article.position = index
         valid = first_schema_valid
         self.mark_outcome(
             http_status=first_status,

@@ -392,6 +392,29 @@ class Database:
         ).fetchall()
         return [self._row_to_article(row) for row in rows]
 
+    def get_articles_between(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        eligible_only: bool = False,
+    ) -> list[Article]:
+        """Return rows with ``start <= fetched_at <= end``.
+
+        Reuses the canonical article SELECT and row parser so every persisted
+        metadata field (including precision/eligibility/filter fields) is
+        restored for backfill and other DB-rebuild entrypoints.
+        """
+        sql = self._ARTICLE_SELECT + " WHERE fetched_at >= ? AND fetched_at <= ?"
+        params: list = [start.isoformat(), end.isoformat()]
+        if eligible_only:
+            sql += " AND delivery_eligible = 1"
+        rows = self.conn.execute(
+            sql + " ORDER BY published_at DESC",
+            params,
+        ).fetchall()
+        return [self._row_to_article(row) for row in rows]
+
     def iter_articles(
         self,
         *,

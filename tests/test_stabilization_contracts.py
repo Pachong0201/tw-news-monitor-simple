@@ -25,9 +25,12 @@ from app.content_filter import (
 )
 from app.main import (
     _classify_delivery_articles,
+    _get_source_continuity,
     collect_all,
     deduplicate_articles_by_url,
 )
+from app.news_pipeline import run_delivery_core
+from app.source_health import SourceHealthStore, SourceOutcome
 from app.military import (
     _military_source_ids_cached,
     clear_military_source_cache,
@@ -373,6 +376,7 @@ def test_date_only_today_delivery_and_yesterday_not(tmp_path):
         {"mna_military": 5},
         today,
         catch_up_enabled=False,
+        source_continuity={"mna_military": True},
     )
     assert delivery["date_only_eligible"] == [today_article]
     assert delivery["stale_articles"] == [yesterday_article]
@@ -789,3 +793,387 @@ def test_identity_migration_creates_index_before_backfill_and_preserves_rows(tmp
         assert db2.schema_version() == SCHEMA_VERSION
     finally:
         db2.close()
+
+
+def _fake_httpx_client(pages: dict[str, str]):
+    import httpx
+
+    class Client:
+        def get(self, url: str):
+            return httpx.Response(
+                200,
+                request=httpx.Request("GET", url),
+                text=pages[url],
+            )
+
+        def close(self):
+            pass
+
+    return Client()
+
+
+def test_nownews_collector_merges_banner_and_list_exact(monkeypatch):
+    url = "https://www.nownews.com/cat/news-summary/military/"
+    article_url = "https://www.nownews.com/news/123456"
+    html = f"""
+    <html><body>
+      <a href="{article_url}" data-sec="banner_news">
+        <h2 class="title">Banner no time</h2>
+      </a>
+      <ul id="ulNewsList">
+        <li class="item">
+          <a href="{article_url}">
+            <h3 class="title">List exact</h3>
+            <time datetime="2026-09-09 18:30">2026-09-09 18:30</time>
+          </a>
+        </li>
+      </ul>
+    </body></html>
+    """
+    cfg = {
+        "id": "nownews_military",
+        "name": "NOWnews",
+        "type": "nownews_military",
+        "category": "military",
+        "topic": "military",
+        "military_source_type": "commercial_military",
+        "url": url,
+        "max_pages": 1,
+    }
+    collector = NownewsMilitaryCollector(cfg)
+    collector._client = _fake_httpx_client({url: html})
+    monkeypatch.setattr(
+        "app.collectors.military._now_taipei",
+        lambda: datetime(2026, 9, 9, 19, 0, tzinfo=TAIPEI),
+    )
+    rows = collector.collect()
+    assert len(rows) == 1
+    assert rows[0].published_at_precision == "exact"
+    assert rows[0].published_at == datetime(2026, 9, 9, 18, 30, tzinfo=TAIPEI)
+
+
+def test_nownews_collector_merges_across_pages_without_first_win(monkeypatch):
+    """page 1 exact must not be downgraded by page 2 banner unknown."""
+    url = "https://www.nownews.com/cat/news-summary/military/"
+    page1 = url.rstrip("/") + "/page/1/"
+    article_url = "https://www.nownews.com/news/654321"
+    exact_html = f"""
+    <html><body><ul id="ulNewsList">
+      <li class="item"><a href="{article_url}">
+        <h3 class="title">Page one exact</h3>
+        <time datetime="2026-09-09 18:30">2026-09-09 18:30</time>
+      </a></li>
+    </ul></body></html>
+    """
+    banner_html = f"""
+    <html><body>
+      <a href="{article_url}" data-sec="banner_news">
+        <h2 class="title">Page two banner unknown</h2>
+      </a>
+      <ul id="ulNewsList"></ul>
+    </body></html>
+    """
+    cfg = {
+        "id": "nownews_military",
+        "name": "NOWnews",
+        "type": "nownews_military",
+        "category": "military",
+        "topic": "military",
+        "military_source_type": "commercial_military",
+        "url": url,
+        "max_pages": 2,
+    }
+    collector = NownewsMilitaryCollector(cfg)
+    collector._client = _fake_httpx_client({url: exact_html, page1: banner_html})
+    monkeypatch.setattr(
+        "app.collectors.military._now_taipei",
+        lambda: datetime(2026, 9, 9, 19, 0, tzinfo=TAIPEI),
+    )
+    rows = collector.collect()
+    assert len(rows) == 1
+    assert rows[0].published_at_precision == "exact"
+    assert rows[0].published_at == datetime(2026, 9, 9, 18, 30, tzinfo=TAIPEI)
+
+
+def test_word_publish_time_respects_article_precision(tmp_path):
+    run = datetime(2026, 9, 9, 19, 0, tzinfo=TAIPEI)
+    date_only = article(
+        "https://mna.test/date-only",
+        "MNA date only",
+        source_id="mna_military",
+        category="military",
+        published_at=datetime(2026, 9, 9, 0, 0, tzinfo=TAIPEI),
+        precision="date_only",
+    )
+    exact = article(
+        "https://media.test/exact",
+        "Exact media",
+        category="politics",
+        published_at=datetime(2026, 9, 9, 18, 30, tzinfo=TAIPEI),
+        precision="exact",
+    )
+    unknown = article(
+        "https://media.test/unknown",
+        "Unknown media",
+        category="politics",
+        published_at=None,
+        precision="unknown",
+    )
+    output = build_word_digest(
+        [date_only, exact, unknown],
+        tmp_path,
+        generated_at=run,
+        military_topic_urls={date_only.url},
+    )
+    text = "\n".join(p.text for p in Document(output).paragraphs)
+    assert "发布日期：2026-09-09" in text
+    assert "发布时间：2026-09-09 18:30" in text
+    assert "2026-09-09 00:00" not in text
+
+
+def test_recovery_baseline_date_only_but_exact_unaffected(tmp_path):
+    now = datetime(2026, 9, 9, 14, 0, tzinfo=TAIPEI)
+    health = SourceHealthStore(tmp_path / "health.json")
+    health.update(
+        "mna_cont",
+        SourceOutcome(200, True, 1),
+        now=now - timedelta(minutes=30),
+    )
+    health.update(
+        "mna_rec",
+        SourceOutcome(200, True, 1),
+        now=now - timedelta(days=2),
+    )
+    continuity = _get_source_continuity(
+        health,
+        [{"id": "mna_cont"}, {"id": "mna_rec"}],
+        now,
+        3,
+    )
+    assert continuity == {"mna_cont": True, "mna_rec": False}
+
+    today_cont = _make_dated("https://mna.test/continuous", 9, source_id="mna_cont")
+    today_rec = _make_dated("https://mna.test/recovery", 9, source_id="mna_rec")
+    exact_after_outage = article(
+        "https://mna.test/exact",
+        "exact after outage",
+        source_id="mna_rec",
+        category="military",
+        published_at=now - timedelta(minutes=30),
+        precision="exact",
+    )
+
+    # First enable (baseline=0) still suppresses date-only.
+    first = _classify_delivery_articles(
+        [today_cont], {"mna_cont": 0}, now, source_continuity=continuity
+    )
+    assert first["date_only_eligible"] == []
+
+    # Continuous source delivers new date-only.
+    continuous = _classify_delivery_articles(
+        [today_cont],
+        {"mna_cont": 5},
+        now,
+        source_continuity=continuity,
+    )
+    assert continuous["date_only_eligible"] == [today_cont]
+
+    # Recovery run holds back date-only for the source, but not exact news.
+    recovery = _classify_delivery_articles(
+        [today_rec, exact_after_outage],
+        {"mna_rec": 5},
+        now,
+        source_continuity=continuity,
+    )
+    assert recovery["date_only_eligible"] == []
+    assert recovery["fresh_articles"] == [exact_after_outage]
+    assert today_rec in recovery["stale_articles"]
+
+    # Next normal run after a successful health update is continuous again.
+    health.update("mna_rec", SourceOutcome(200, True, 1), now=now)
+    next_continuity = _get_source_continuity(
+        health, [{"id": "mna_rec"}], now + timedelta(minutes=30), 3
+    )
+    next_delivery = _classify_delivery_articles(
+        [today_rec],
+        {"mna_rec": 5},
+        now + timedelta(minutes=30),
+        source_continuity=next_continuity,
+    )
+    assert next_continuity["mna_rec"] is True
+    assert next_delivery["date_only_eligible"] == [today_rec]
+
+
+def test_get_articles_between_preserves_metadata_and_word_date_only(tmp_path):
+    db = Database(tmp_path / "between.db")
+    db.connect()
+    try:
+        date_only = article(
+            "https://mna.test/between",
+            "between date only",
+            source_id="mna_military",
+            category="military",
+            published_at=datetime(2026, 9, 9, 0, 0, tzinfo=TAIPEI),
+            precision="date_only",
+        )
+        date_only.filter_reason = None
+        db.save_articles([date_only])
+        rows = db.get_articles_between(
+            datetime(2026, 9, 1, tzinfo=TAIPEI),
+            datetime(2026, 9, 30, tzinfo=TAIPEI),
+            eligible_only=True,
+        )
+        assert len(rows) == 1
+        assert rows[0].published_at_precision == "date_only"
+        assert rows[0].delivery_eligible is True
+        word = build_word_digest(rows, tmp_path, generated_at=datetime(2026, 9, 9, 12, 0, tzinfo=TAIPEI))
+        text = "\n".join(p.text for p in Document(word).paragraphs)
+        assert "发布日期：2026-09-09" in text
+        assert "00:00" not in text
+    finally:
+        db.close()
+
+
+def test_diagnose_accepts_production_type_and_legacy_collector(tmp_path, monkeypatch):
+    import app.diagnose as diagnose_mod
+
+    class FakeDiagnoseCollector:
+        seen = []
+
+        def __init__(self, source):
+            self.source = source
+            self.last_outcome = None
+
+        def collect(self):
+            self.seen.append(self.source.get("id"))
+            return [
+                article(
+                    f"https://diag.test/{self.source.get('id')}",
+                    "diagnosis article",
+                    category="politics",
+                    published_at=datetime(2026, 9, 9, 12, 0, tzinfo=TAIPEI),
+                )
+            ]
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(diagnose_mod.COLLECTOR_MAP, "president_json", FakeDiagnoseCollector)
+    monkeypatch.setitem(diagnose_mod.COLLECTOR_MAP, "rss", FakeDiagnoseCollector)
+    out = tmp_path / "diagnostics"
+    diagnose_mod.run_diagnosis(
+        [
+            {"id": "president_press", "name": "总统府", "type": "president_json"},
+            {"id": "legacy", "name": "Legacy", "collector": "rss"},
+            {"id": "unsupported", "name": "Unsupported", "type": "does_not_exist"},
+        ],
+        None,
+        out,
+        run_started_at=datetime(2026, 9, 9, 12, 0, tzinfo=TAIPEI),
+    )
+    assert set(FakeDiagnoseCollector.seen) == {"president_press", "legacy"}
+    assert (out / "latest_collection.csv").exists()
+    assert (out / "latest_diagnosis.md").exists()
+
+
+def test_fix3_end_to_end_delivery_export_backfill_semantics(tmp_path):
+    run = datetime(2026, 9, 9, 19, 0, tzinfo=TAIPEI)
+    db = Database(tmp_path / "integration.db")
+    db.connect()
+    try:
+        a = article(
+            "https://example.test/a",
+            "A normal politics",
+            category="politics",
+            published_at=run - timedelta(minutes=30),
+            precision="exact",
+        )
+        b = article(
+            "https://example.test/b",
+            "B lottery",
+            category="economy",
+            published_at=run - timedelta(minutes=30),
+            precision="exact",
+        )
+        b.delivery_eligible = False
+        b.filter_reason = "content_filter"
+        c = _make_dated(
+            "https://mna.test/c", 9, source_id="mna_cont", title="C continuous date-only"
+        )
+        d = _make_dated(
+            "https://mna.test/d", 9, source_id="mna_rec", title="D recovery date-only"
+        )
+        e_unknown = article(
+            "https://www.nownews.com/news/999",
+            "E banner",
+            category="military",
+            published_at=None,
+            precision="unknown",
+        )
+        e_exact = article(
+            "https://www.nownews.com/news/999",
+            "E list exact",
+            category="military",
+            published_at=run - timedelta(minutes=30),
+            precision="exact",
+        )
+        e_pair, _ = deduplicate_articles_by_url([e_unknown, e_exact])
+        assert e_pair[0].published_at_precision == "exact"
+        e = e_pair[0]
+
+        assert db.save_articles([a, b, c, d, e]) == [a, b, c, d, e]
+
+        delivery = run_delivery_core(
+            [a, b, c, d, e],
+            {"mna_cont": 5, "mna_rec": 5},
+            run,
+            international_config=None,
+            importance_rules_config={"enabled": False, "thresholds": {}, "rules": []},
+            prepare_international_delivery=lambda articles, _cfg: (
+                list(articles),
+                {article.url: [article] for article in articles},
+            ),
+            enrich_summaries=lambda _articles: None,
+            excluded_delivery_urls={b.url},
+            source_continuity={"mna_cont": True, "mna_rec": False},
+            catch_up_enabled=False,
+        )
+        delivery_urls = {article.url for article in delivery.delivery_articles}
+        assert a.url in delivery_urls
+        assert b.url not in delivery_urls
+        assert c.url in delivery_urls
+        assert d.url not in delivery_urls
+        assert e.url in delivery_urls
+
+        word = build_word_digest(
+            delivery.delivery_articles,
+            tmp_path,
+            generated_at=run,
+            military_topic_urls={c.url, e.url},
+        )
+        word_text = "\n".join(p.text for p in Document(word).paragraphs)
+        assert "发布日期：2026-09-09" in word_text
+        assert "发布时间：2026-09-09 18:30" in word_text
+        assert "2026-09-09 00:00" not in word_text
+
+        export_articles = db.get_articles_since(
+            datetime(2000, 1, 1), eligible_only=True
+        )
+        assert b.url not in {article.url for article in export_articles}
+
+        between = db.get_articles_between(
+            datetime(2026, 9, 1, tzinfo=TAIPEI),
+            datetime(2026, 9, 30, tzinfo=TAIPEI),
+            eligible_only=True,
+        )
+        assert b.url not in {article.url for article in between}
+        c_loaded = next(article for article in between if article.url == c.url)
+        assert c_loaded.published_at_precision == "date_only"
+        backfill_word = build_word_digest(
+            between, tmp_path, generated_at=run,
+        )
+        backfill_text = "\n".join(p.text for p in Document(backfill_word).paragraphs)
+        assert "发布日期：2026-09-09" in backfill_text
+        assert "2026-09-09 00:00" not in backfill_text
+    finally:
+        db.close()

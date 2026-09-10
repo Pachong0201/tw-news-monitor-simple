@@ -866,7 +866,9 @@ def _classify_delivery_articles(
     run_started_at: datetime,
     catch_up_enabled: bool = False,
     catch_up_max_minutes: int = 720,
+    source_continuity: dict[str, bool] | None = None,
 ):
+    continuity = source_continuity or {}
     freshness = filter_fresh_articles(
         inserted_articles, run_started_at,
         catch_up_enabled=catch_up_enabled,
@@ -889,10 +891,12 @@ def _classify_delivery_articles(
     date_only_eligible = [
         a for a in date_only_today
         if source_baselines.get(a.source_id, 0) > 0
+        and bool(continuity.get(a.source_id, False))
     ]
     date_only_baseline_excluded = [
         a for a in date_only_today
         if source_baselines.get(a.source_id, 0) == 0
+        or not bool(continuity.get(a.source_id, False))
     ]
     stale_articles = stale_articles + baseline_excluded + date_only_baseline_excluded
     catch_up_urls = {a.url for a in catch_up_eligible}
@@ -921,6 +925,41 @@ def _get_source_baselines(db: Database, sources: list[dict]) -> dict[str, int]:
         except Exception:
             baselines[source_id] = 0
     return baselines
+
+
+def _get_source_continuity(
+    health_store: SourceHealthStore | None,
+    sources: list[dict],
+    now: datetime,
+    max_gap_hours: int,
+) -> dict[str, bool]:
+    """Return whether each source had a recent successful collection.
+
+    A missing/old last_success means the source is treated as just recovering,
+    so same-day date-only articles are held back for this run.  Exact articles
+    are unaffected and still use normal freshness/catch-up logic.
+    """
+    continuity: dict[str, bool] = {}
+    max_gap = timedelta(hours=max(1, int(max_gap_hours)))
+    for source in sources:
+        source_id = str(source.get("id") or "")
+        if not source_id:
+            continue
+        last_success = None
+        if health_store is not None:
+            try:
+                last_success = health_store.get(source_id).last_success
+            except Exception:
+                last_success = None
+        if last_success is None:
+            continuity[source_id] = False
+            continue
+        if last_success.tzinfo is None:
+            last_success = last_success.replace(tzinfo=TAIPEI)
+        else:
+            last_success = last_success.astimezone(TAIPEI)
+        continuity[source_id] = (now - last_success) <= max_gap
+    return continuity
 
 
 def prepare_international_delivery(
@@ -1319,6 +1358,11 @@ def main() -> None:
         try:
             db.create_tables()
             source_baselines = _get_source_baselines(db, sources)
+            continuity_now = datetime.now(TAIPEI)
+            source_continuity = _get_source_continuity(
+                tmp_health, sources, continuity_now,
+                settings.date_only_recovery_max_gap_hours,
+            )
             collection = collect_all(
                 sources, db, content_filter_config, military_config,
                 health_store=tmp_health,
@@ -1343,6 +1387,7 @@ def main() -> None:
                 prepare_international_delivery=prepare_international_delivery,
                 enrich_summaries=lambda articles: enrich_summaries_safe(articles, db),
                 excluded_delivery_urls=excluded_delivery_urls,
+                source_continuity=source_continuity,
                 catch_up_enabled=False,
             )
             fresh_articles = delivery.fresh_articles
@@ -1586,36 +1631,15 @@ def main() -> None:
             db.close()
             return
 
-        # Fetch articles inserted in a 2-hour window around the batch time
+        # Fetch articles inserted in a 2-hour window around the batch time.
+        # Use the canonical Database parser so precision/eligibility/filter
+        # metadata survives the backfill round-trip.
         batch_start = batch_dt - timedelta(hours=1)
         batch_end = batch_dt + timedelta(hours=1)
-        from datetime import timezone as _tz
-        articles = []
         try:
-            rows = db.conn.execute(
-                "SELECT source_id, source_name, category, title, url, "
-                "published_at, fetched_at, position, summary, summary_attempted_at "
-                "FROM articles WHERE delivery_eligible = 1 "
-                "AND fetched_at >= ? AND fetched_at <= ? "
-                "ORDER BY published_at DESC",
-                (batch_start.isoformat(), batch_end.isoformat()),
-            ).fetchall()
-            from .models import Article as _Article
-            articles = [
-                _Article(
-                    source_id=row[0], source_name=row[1], category=row[2],
-                    title=row[3], url=row[4],
-                    published_at=datetime.fromisoformat(row[5]) if row[5] else None,
-                    fetched_at=datetime.fromisoformat(row[6]),
-                    position=row[7],
-                    summary=row[8],
-                    summary_attempted_at=(
-                        datetime.fromisoformat(row[9]) if row[9] else None
-                    ),
-                )
-
-                for row in rows
-            ]
+            articles = db.get_articles_between(
+                batch_start, batch_end, eligible_only=True
+            )
         except Exception as e:
             print(f"查询失败: {e}")
             db.close()
@@ -1714,6 +1738,11 @@ def main() -> None:
         # Capture baselines before insertion. A newly enabled source with no
         # history must not deliver old catch-up entries on its first run.
         source_baselines = _get_source_baselines(db, sources)
+        continuity_now = datetime.now(TAIPEI)
+        source_continuity = _get_source_continuity(
+            health_store, sources, continuity_now,
+            settings.date_only_recovery_max_gap_hours,
+        )
 
         collection = collect_all(
             sources, db, content_filter_config, military_config,
@@ -1768,6 +1797,7 @@ def main() -> None:
             prepare_international_delivery=prepare_international_delivery,
             enrich_summaries=lambda articles: enrich_summaries_safe(articles, db),
             excluded_delivery_urls=excluded_delivery_urls,
+            source_continuity=source_continuity,
             catch_up_enabled=catch_up_enabled,
             catch_up_max_minutes=catch_up_max_minutes,
         )

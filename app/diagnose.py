@@ -9,12 +9,21 @@ from .time_utils import TAIPEI
 from pathlib import Path
 
 from .collectors import (
+    BloombergNewsletterCollector,
+    CNAHtmlCollector,
     EBCCollector,
+    FTAlphavilleCollector,
     LtnMilitaryCollector,
+    LtnRSSCollector,
     MNAMilitaryCollector,
     NownewsMilitaryCollector,
+    PresidentCollector,
     RSSCollector,
+    ReutersCollector,
     UDNCollector,
+    WSJNewsletterCollector,
+    WSJRSSCollector,
+    ZaobaoCollector,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,6 +32,16 @@ COLLECTOR_MAP = {
     "rss": RSSCollector,
     "udn": UDNCollector,
     "ebc": EBCCollector,
+    "cna_list_html": CNAHtmlCollector,
+    "zaobao": ZaobaoCollector,
+    "ltn_rss": LtnRSSCollector,
+    "newtalk_rss": RSSCollector,
+    "president_json": PresidentCollector,
+    "reuters": ReutersCollector,
+    "ft_alphaville": FTAlphavilleCollector,
+    "wsj_rss": WSJRSSCollector,
+    "wsj_newsletter": WSJNewsletterCollector,
+    "bloomberg_newsletter": BloombergNewsletterCollector,
     "ltn_military": LtnMilitaryCollector,
     "nownews_military": NownewsMilitaryCollector,
     "mna_military": MNAMilitaryCollector,
@@ -66,17 +85,31 @@ def run_diagnosis(sources, db, output_dir, run_started_at=None):
     seen_across_cats = {}
 
     for source in sources:
-        cls = COLLECTOR_MAP.get(source["collector"])
-        if not cls:
+        source_type = source.get("type") or source.get("collector")
+        cls = COLLECTOR_MAP.get(source_type)
+        if source.get("enabled") is False:
+            logger.info("Diagnosis: skipping disabled source %s", source.get("id"))
             continue
-        collector = cls(source)
+        if not cls:
+            logger.warning(
+                "Diagnosis: unsupported collector type %r for source %s; skipping",
+                source_type,
+                source.get("id"),
+            )
+            continue
+        collector = None
         try:
+            collector = cls(source)
             articles = collector.collect()
         except Exception as e:
             logger.error("Failed %s: %s", source["id"], e)
             continue
         finally:
-            collector.close()
+            if collector is not None:
+                try:
+                    collector.close()
+                except Exception:
+                    logger.warning("Diagnosis: collector close failed for %s", source.get("id"))
 
         for article in articles:
             nurl = article.url
@@ -113,7 +146,7 @@ def run_diagnosis(sources, db, output_dir, run_started_at=None):
 
             records.append({
                 "run_started_at": run_started_at.strftime("%Y-%m-%d %H:%M:%S"),
-                "collector_name": source["collector"],
+                "collector_name": source_type,
                 "source_id": source["id"],
                 "source_name": source["name"],
                 "category": cat,
@@ -127,8 +160,8 @@ def run_diagnosis(sources, db, output_dir, run_started_at=None):
                 "published_timezone": pub_tz,
                 "published_at_is_aware": "true" if (article.published_at and article.published_at.tzinfo is not None) else "false",
                 "time_parse_method": (
-                    "rss_explicit_offset" if source["collector"] == "rss"
-                    else "html_full_datetime" if source["collector"] == "ebc"
+                    "rss_explicit_offset" if source_type in {"rss", "newtalk_rss"}
+                    else "html_full_datetime" if source_type in {"ebc", "udn", "cna_list_html"}
                     else "html_local_taipei"
                 ) if article.published_at else "parse_failed",
                 "assumed_timezone": str(article.published_at.tzinfo) if article.published_at and article.published_at.tzinfo else "",
