@@ -224,6 +224,7 @@ class NownewsMilitaryCollector(BaseCollector):
                     published_at=None,
                     fetched_at=fetched_at,
                     position=0,
+                    published_at_precision="unknown",
                 )
             )
         for item in list_node.select("li.item"):
@@ -258,6 +259,7 @@ class NownewsMilitaryCollector(BaseCollector):
                     published_at=published_at,
                     fetched_at=fetched_at,
                     position=0,
+                    published_at_precision="exact" if published_at else "unknown",
                 )
             )
         return parsed, True

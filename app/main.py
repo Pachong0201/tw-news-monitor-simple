@@ -2,6 +2,7 @@ import argparse
 import importlib
 import logging
 import sys
+from dataclasses import replace as dataclass_replace
 import os
 import tempfile
 import shutil
@@ -737,29 +738,76 @@ def collect_all(
         len(all_raw), len(unique_articles), len(run_dups), len(identity_run_dups),
     )
 
-    # Phase 3: DB check with identity keys (prevents UDN alias re-insertion)
+    # Phase 3: DB check with identity keys (prevents UDN alias re-insertion).
+    # Historical duplicates may still be promoted when the incoming copy is a
+    # richer representation (e.g. banner unknown -> list exact on a later run).
     candidate_urls = [a.url for a in unique_articles]
-    try:
-        existing_urls = set(db.get_existing_urls(candidate_urls))
-    except AttributeError:
-        # Compatibility for injected legacy database doubles only; the
-        # production Database implementation never scans the full table here.
-        existing_urls = set(db.get_all_article_urls())
     identity_by_url = {a.url: article_identity_key(a.url) for a in unique_articles}
-    try:
-        existing_ids = set(db.get_existing_identity_keys(list(identity_by_url.values())))
-    except AttributeError:
-        existing_ids = {article_identity_key(u) for u in existing_urls}
+    can_promote = all(
+        hasattr(type(db), name)
+        for name in ("get_articles_by_urls", "update_article_metadata_if_richer")
+    )
+    if can_promote:
+        try:
+            existing_by_url = db.get_articles_by_urls(candidate_urls)
+            existing_by_id = db.get_articles_by_identity_keys(
+                list(identity_by_url.values())
+            )
+            existing_urls = set(existing_by_url)
+            existing_ids = set(existing_by_id)
+        except Exception as exc:  # noqa: BLE001 - promotion must fail safe
+            logger.warning("Historical metadata lookup failed safely: %s", exc)
+            can_promote = False
+    if not can_promote:
+        try:
+            existing_urls = set(db.get_existing_urls(candidate_urls))
+        except AttributeError:
+            # Compatibility for injected legacy database doubles only.
+            existing_urls = set(db.get_all_article_urls())
+        try:
+            existing_ids = set(
+                db.get_existing_identity_keys(list(identity_by_url.values()))
+            )
+        except AttributeError:
+            existing_ids = {article_identity_key(u) for u in existing_urls}
+        existing_by_url = {}
+        existing_by_id = {}
+
     candidates = []
+    promoted_articles = []
+    promoted_delivery_articles = []
     hist_url_dups = []
     hist_id_dups = []
     for a in unique_articles:
         if a.url in existing_urls:
-            hist_url_dups.append(a)
-        elif identity_by_url[a.url] in existing_ids:
-            hist_id_dups.append(a)
-        else:
-            candidates.append(a)
+            existing = existing_by_url.get(a.url)
+            if existing is not None and db.update_article_metadata_if_richer(existing, a):
+                promoted = dataclass_replace(a, url=existing.url)
+                promoted_articles.append(promoted)
+                if (
+                    getattr(existing, "delivered_at", None) is None
+                    and getattr(existing, "delivery_eligible", True)
+                ):
+                    promoted_delivery_articles.append(promoted)
+            else:
+                hist_url_dups.append(a)
+            continue
+        identity_key = identity_by_url[a.url]
+        if identity_key in existing_ids:
+            existing = existing_by_id.get(identity_key)
+            if existing is not None and db.update_article_metadata_if_richer(existing, a):
+                # Keep the persisted canonical URL; only metadata is promoted.
+                promoted = dataclass_replace(a, url=existing.url)
+                promoted_articles.append(promoted)
+                if (
+                    getattr(existing, "delivered_at", None) is None
+                    and getattr(existing, "delivery_eligible", True)
+                ):
+                    promoted_delivery_articles.append(promoted)
+            else:
+                hist_id_dups.append(a)
+            continue
+        candidates.append(a)
 
     # Content filter: its mode determines persistence versus delivery only.
     filter_result = apply_content_filter(candidates, content_filter_config)
@@ -824,6 +872,8 @@ def collect_all(
     result = CollectionResult(
         fetched_articles=fetched_articles,
         inserted_articles=inserted,
+        promoted_articles=promoted_articles,
+        promoted_delivery_articles=promoted_delivery_articles,
         filtered_before_save=filtered_before_save,
         filtered_from_delivery=filtered_from_delivery,
         failed_sources=failed,
@@ -835,10 +885,11 @@ def collect_all(
     result.election_annotations = election_annotations
     logger.info(
         "Total: fetched=%d, run_url_removed=%d, run_id_removed=%d, "
-        "hist_url_dup=%d, hist_id_dup=%d, filtered=%d, inserted=%d, failed=%d",
+        "hist_url_dup=%d, hist_id_dup=%d, filtered=%d, inserted=%d, "
+        "promoted=%d, failed=%d",
         total_fetched, len(run_dups), len(identity_run_dups),
         len(hist_url_dups), len(hist_id_dups),
-        result.filtered_count, len(inserted), len(failed),
+        result.filtered_count, len(inserted), len(promoted_articles), len(failed),
     )
     return result
 
@@ -1377,9 +1428,10 @@ def main() -> None:
             hist_id_dup = collection.historical_identity_duplicates
             filtered_count = collection.filtered_count
             now = datetime.now(TAIPEI)
+            delivery_input = list(inserted) + list(collection.promoted_delivery_articles)
             excluded_delivery_urls = {a.url for a in collection.filtered_from_delivery}
             delivery = run_delivery_core(
-                inserted,
+                delivery_input,
                 source_baselines,
                 now,
                 international_config=international_config,
@@ -1583,6 +1635,10 @@ def main() -> None:
                 word_articles, db, "military"
             ),
         )
+        if hasattr(db, "mark_articles_delivered"):
+            db.mark_articles_delivered(
+                [article.url for article in word_articles], now
+            )
         print(f"Word简报已生成：\n{output_path}")
         logger.info("Word export complete: %s", output_path)
         db.close()
@@ -1684,6 +1740,8 @@ def main() -> None:
                     articles, db, "military"
                 ),
             )
+            if hasattr(db, "mark_articles_delivered"):
+                db.mark_articles_delivered([article.url for article in articles], now)
             print(f"Word generated: {word_path}")
 
             # Send to Feishu
@@ -1758,6 +1816,7 @@ def main() -> None:
         hist_id_dup = collection.historical_identity_duplicates
         filtered_count = collection.filtered_count
         now = datetime.now(TAIPEI)
+        delivery_input = list(inserted) + list(collection.promoted_delivery_articles)
 
         notifier = create_notifier()
         international_translator = _build_international_translator()
@@ -1789,7 +1848,7 @@ def main() -> None:
         db_existing = dup - run_removed
         excluded_delivery_urls = {a.url for a in collection.filtered_from_delivery}
         delivery = run_delivery_core(
-            inserted,
+            delivery_input,
             source_baselines,
             now,
             international_config=international_config,
@@ -1868,6 +1927,14 @@ def main() -> None:
                 "International event candidates: %d (sent=%s)",
                 len(event_candidates), send_succeeded,
             )
+            if send_succeeded and hasattr(db, "mark_articles_delivered"):
+                delivered_event_urls = set()
+                for candidate in event_candidates:
+                    delivered_event_urls.add(candidate.canonical_url)
+                    delivered_event_urls.update(candidate.coverage_urls)
+                db.mark_articles_delivered(
+                    [url for url in delivered_event_urls if url], now
+                )
         except Exception as event_err:
             logger.warning("International event notification failed safely: %s", event_err)
 
@@ -1925,6 +1992,10 @@ def main() -> None:
                         digest_articles, db, "military"
                     ),
                 )
+                if hasattr(db, "mark_articles_delivered"):
+                    db.mark_articles_delivered(
+                        [article.url for article in digest_articles], now
+                    )
                 logger.info("Word digest saved: %s", word_path)
                 # Auto-send to Feishu if credentials are available
                 try:

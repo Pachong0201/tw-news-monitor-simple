@@ -27,3 +27,5 @@ class Article:
     delivery_eligible: bool = True
     filter_reason: str | None = None
     filter_version: str | None = None
+    # 首次成功进入交付产物（Word/Feishu）的时间；NULL 表示尚未交付。
+    delivered_at: datetime | None = None

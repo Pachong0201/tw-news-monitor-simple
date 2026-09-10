@@ -1177,3 +1177,237 @@ def test_fix3_end_to_end_delivery_export_backfill_semantics(tmp_path):
         assert "2026-09-09 00:00" not in backfill_text
     finally:
         db.close()
+
+
+def _run_core_delivery(articles, run, *, baselines=None, excluded=()):
+    return run_delivery_core(
+        list(articles),
+        dict(baselines or {}),
+        run,
+        international_config=None,
+        importance_rules_config={"enabled": False, "thresholds": {}, "rules": []},
+        prepare_international_delivery=lambda rows, _cfg: (
+            list(rows),
+            {article.url: [article] for article in rows},
+        ),
+        enrich_summaries=lambda _rows: None,
+        excluded_delivery_urls=set(excluded),
+        catch_up_enabled=False,
+    )
+
+
+class _MutableStubCollector:
+    current = []
+
+    def __init__(self, source):
+        self.source = source
+
+    def collect(self):
+        return list(self.current)
+
+    def close(self):
+        pass
+
+
+def _collect_with_stub(db, source, articles):
+    _MutableStubCollector.current = list(articles)
+    return collect_all(
+        [source],
+        db,
+        content_filter_config={"enabled": False},
+        military_config=None,
+        collector_map={"stub": _MutableStubCollector},
+    )
+
+
+def test_nownews_banner_without_time_is_unknown_precision():
+    url = "https://www.nownews.com/cat/news-summary/military/"
+    html = """
+    <html><body>
+      <a href="https://www.nownews.com/news/777" data-sec="banner_news">
+        <h2 class="title">Banner only</h2>
+      </a>
+      <ul id="ulNewsList"></ul>
+    </body></html>
+    """
+    collector = NownewsMilitaryCollector({
+        "id": "nownews_military", "name": "NOWnews",
+        "type": "nownews_military", "category": "military",
+        "topic": "military", "military_source_type": "commercial_military",
+        "url": url,
+    })
+    rows, valid = collector._parse_page(
+        html, datetime(2026, 9, 9, 19, 0, tzinfo=TAIPEI)
+    )
+    assert valid is True
+    assert len(rows) == 1
+    assert rows[0].published_at is None
+    assert rows[0].published_at_precision == "unknown"
+
+
+def test_cross_round_unknown_to_exact_promotes_and_delivers(tmp_path):
+    db = Database(tmp_path / "promotion.db")
+    db.connect()
+    try:
+        run = datetime(2026, 9, 9, 18, 30, tzinfo=TAIPEI)
+        url = "https://www.nownews.com/news/888"
+        source = {"id": "stub", "name": "Stub", "type": "stub",
+                  "category": "military", "url": "https://example.test"}
+        unknown = article(url, "promotion", published_at=None, precision="unknown")
+        round1 = _collect_with_stub(db, source, [unknown])
+        assert len(round1.inserted_articles) == 1
+        assert round1.promoted_delivery_articles == []
+        assert db.count_articles() == 1
+        assert db.conn.execute(
+            "SELECT published_at_precision FROM articles WHERE url=?", (url,)
+        ).fetchone()[0] == "unknown"
+        delivery1 = _run_core_delivery(round1.inserted_articles, run)
+        assert url not in {a.url for a in delivery1.delivery_articles}
+
+        exact = article(
+            url, "promotion exact",
+            published_at=datetime(2026, 9, 9, 18, 5, tzinfo=TAIPEI),
+            precision="exact",
+        )
+        round2 = _collect_with_stub(db, source, [exact])
+        assert len(round2.inserted_articles) == 0
+        assert len(round2.promoted_articles) == 1
+        assert len(round2.promoted_delivery_articles) == 1
+        row = db.conn.execute(
+            "SELECT published_at, published_at_precision, url FROM articles"
+        ).fetchall()
+        assert len(row) == 1
+        assert row[0][1] == "exact"
+        assert row[0][2] == url
+        delivery2 = _run_core_delivery(
+            list(round2.inserted_articles) + list(round2.promoted_delivery_articles),
+            run,
+        )
+        assert url in {a.url for a in delivery2.delivery_articles}
+        db.mark_articles_delivered([url], run)
+
+        round3 = _collect_with_stub(db, source, [exact])
+        assert len(round3.inserted_articles) == 0
+        assert round3.promoted_articles == []
+        assert round3.promoted_delivery_articles == []
+        assert db.count_articles() == 1
+        delivery3 = _run_core_delivery(
+            list(round3.inserted_articles) + list(round3.promoted_delivery_articles),
+            run,
+        )
+        assert url not in {a.url for a in delivery3.delivery_articles}
+    finally:
+        db.close()
+
+
+def test_promotion_date_only_to_exact_does_not_redeliver(tmp_path):
+    db = Database(tmp_path / "redeliver.db")
+    db.connect()
+    try:
+        run = datetime(2026, 9, 9, 18, 30, tzinfo=TAIPEI)
+        url = "https://mna.test/already-sent"
+        date_only = article(
+            url, "already delivered", source_id="mna_military", category="military",
+            published_at=datetime(2026, 9, 9, 0, 0, tzinfo=TAIPEI),
+            precision="date_only",
+        )
+        db.save_articles([date_only])
+        db.mark_articles_delivered([url], run - timedelta(hours=1))
+        source = {"id": "mna_military", "name": "MNA", "type": "stub",
+                  "category": "military", "url": "https://example.test"}
+        exact = article(
+            url, "exact arrived", source_id="mna_military", category="military",
+            published_at=datetime(2026, 9, 9, 18, 20, tzinfo=TAIPEI),
+            precision="exact",
+        )
+        result = _collect_with_stub(db, source, [exact])
+        assert len(result.promoted_articles) == 1
+        assert result.promoted_delivery_articles == []
+        row = db.conn.execute(
+            "SELECT published_at_precision, delivered_at FROM articles WHERE url=?",
+            (url,),
+        ).fetchone()
+        assert row[0] == "exact"
+        assert row[1] is not None
+    finally:
+        db.close()
+
+
+def test_promotion_unknown_to_exact_stale_only_updates_db(tmp_path):
+    db = Database(tmp_path / "stale.db")
+    db.connect()
+    try:
+        run = datetime(2026, 9, 9, 21, 0, tzinfo=TAIPEI)
+        url = "https://www.nownews.com/news/999"
+        source = {"id": "stub", "name": "Stub", "type": "stub",
+                  "category": "military", "url": "https://example.test"}
+        unknown = article(url, "stale promotion", published_at=None, precision="unknown")
+        _collect_with_stub(db, source, [unknown])
+        exact = article(
+            url, "stale exact",
+            published_at=datetime(2026, 9, 8, 18, 0, tzinfo=TAIPEI),
+            precision="exact",
+        )
+        result = _collect_with_stub(db, source, [exact])
+        assert len(result.promoted_articles) == 1
+        delivery = _run_core_delivery(result.promoted_delivery_articles, run)
+        assert delivery.delivery_articles == []
+        assert db.conn.execute(
+            "SELECT published_at_precision FROM articles WHERE url=?", (url,)
+        ).fetchone()[0] == "exact"
+    finally:
+        db.close()
+
+
+def test_promotion_never_downgrades_exact_to_unknown(tmp_path):
+    db = Database(tmp_path / "downgrade.db")
+    db.connect()
+    try:
+        url = "https://www.nownews.com/news/111"
+        source = {"id": "stub", "name": "Stub", "type": "stub",
+                  "category": "military", "url": "https://example.test"}
+        exact = article(
+            url, "kept exact",
+            published_at=datetime(2026, 9, 9, 18, 30, tzinfo=TAIPEI),
+            precision="exact",
+        )
+        db.save_articles([exact])
+        unknown = article(url, "poorer", published_at=None, precision="unknown")
+        result = _collect_with_stub(db, source, [unknown])
+        assert result.promoted_articles == []
+        row = db.conn.execute(
+            "SELECT published_at, published_at_precision FROM articles WHERE url=?",
+            (url,),
+        ).fetchone()
+        assert row[0].startswith("2026-09-09T18:30")
+        assert row[1] == "exact"
+    finally:
+        db.close()
+
+
+def test_promotion_via_same_identity_different_url_keeps_one_row(tmp_path):
+    db = Database(tmp_path / "identity-promotion.db")
+    db.connect()
+    try:
+        run = datetime(2026, 9, 9, 18, 30, tzinfo=TAIPEI)
+        old_url = "https://udn.com/news/story/6656/9635000"
+        new_url = "https://udn.com/news/story/7238/9635000"
+        source = {"id": "stub", "name": "Stub", "type": "stub",
+                  "category": "politics", "url": "https://example.test"}
+        unknown = article(old_url, "identity promotion", published_at=None, precision="unknown")
+        _collect_with_stub(db, source, [unknown])
+        exact = article(
+            new_url, "identity promotion exact",
+            published_at=datetime(2026, 9, 9, 18, 0, tzinfo=TAIPEI),
+            precision="exact",
+        )
+        result = _collect_with_stub(db, source, [exact])
+        assert len(result.promoted_articles) == 1
+        assert db.count_articles() == 1
+        row = db.conn.execute(
+            "SELECT url, published_at_precision FROM articles"
+        ).fetchone()
+        assert row[0] == old_url
+        assert row[1] == "exact"
+    finally:
+        db.close()

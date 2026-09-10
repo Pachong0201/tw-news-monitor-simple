@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 class CollectionResult:
     fetched_articles: list = field(default_factory=list)
     inserted_articles: list = field(default_factory=list)
+    promoted_articles: list = field(default_factory=list)
+    promoted_delivery_articles: list = field(default_factory=list)
     filtered_before_save: list = field(default_factory=list)
     filtered_from_delivery: list = field(default_factory=list)
     failed_sources: list[str] = field(default_factory=list)

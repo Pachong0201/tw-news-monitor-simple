@@ -5,11 +5,11 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-from .article_identity import article_identity_key
+from .article_identity import article_identity_key, prefer_richer_article
 from .models import Article
 
 logger = logging.getLogger(__name__)
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 IDENTITY_BACKFILL_BATCH = 500
 
 
@@ -99,7 +99,8 @@ class Database:
                     access_level TEXT,
                     delivery_eligible INTEGER NOT NULL DEFAULT 1,
                     filter_reason TEXT,
-                    filter_version TEXT
+                    filter_version TEXT,
+                    delivered_at TEXT
                 )
                 """
             )
@@ -155,6 +156,7 @@ class Database:
                 ),
                 ("filter_reason", "filter_reason TEXT"),
                 ("filter_version", "filter_version TEXT"),
+                ("delivered_at", "delivered_at TEXT"),
             ):
                 if col not in article_columns:
                     self.conn.execute(f"ALTER TABLE articles ADD COLUMN {ddl}")
@@ -323,6 +325,7 @@ class Database:
             1 if getattr(article, "delivery_eligible", True) else 0,
             getattr(article, "filter_reason", None),
             getattr(article, "filter_version", None),
+            article.delivered_at.isoformat() if getattr(article, "delivered_at", None) else None,
         )
 
     _ARTICLE_INSERT_SQL = """
@@ -331,8 +334,8 @@ class Database:
              published_at, published_at_precision, fetched_at, position,
              summary, summary_source, summary_attempted_at, section,
              language, access_level, delivery_eligible, filter_reason,
-             filter_version)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             filter_version, delivered_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
 
     def save_article(self, article: Article) -> None:
@@ -369,13 +372,14 @@ class Database:
             delivery_eligible=bool(row[16]) if row[16] is not None else True,
             filter_reason=row[17],
             filter_version=row[18],
+            delivered_at=datetime.fromisoformat(row[19]) if row[19] else None,
         )
 
     _ARTICLE_SELECT = (
         "SELECT source_id, source_name, category, title, url, identity_key, "
         "published_at, published_at_precision, fetched_at, position, summary, "
         "summary_source, summary_attempted_at, section, language, access_level, "
-        "delivery_eligible, filter_reason, filter_version "
+        "delivery_eligible, filter_reason, filter_version, delivered_at "
         "FROM articles"
     )
 
@@ -534,6 +538,121 @@ class Database:
             ).fetchall()
             found.update(row[0] for row in rows if row[0])
         return found
+
+    def get_articles_by_urls(self, urls: list[str]) -> dict[str, Article]:
+        """Return existing articles keyed by URL, using bounded IN queries."""
+        found: dict[str, Article] = {}
+        for chunk in self._chunks(list(dict.fromkeys(urls))):
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.conn.execute(
+                self._ARTICLE_SELECT + f" WHERE url IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                article = self._row_to_article(row)
+                found[article.url] = article
+        return found
+
+    def get_articles_by_identity_keys(self, identity_keys: list[str]) -> dict[str, Article]:
+        """Return existing articles keyed by identity_key."""
+        found: dict[str, Article] = {}
+        for chunk in self._chunks(list(dict.fromkeys(identity_keys))):
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.conn.execute(
+                self._ARTICLE_SELECT
+                + f" WHERE identity_key IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                article = self._row_to_article(row)
+                key = row[5]
+                if key and key not in found:
+                    found[key] = article
+        return found
+
+    @staticmethod
+    def _metadata_precision_rank(value) -> int:
+        text = str(value or "unknown").strip().lower()
+        if text == "exact":
+            return 3
+        if text == "date_only":
+            return 2
+        return 1
+
+    def update_article_metadata_if_richer(
+        self, existing: Article, incoming: Article
+    ) -> bool:
+        """Promote persisted metadata only when the incoming copy is richer.
+
+        Exact-time records are never overwritten by another exact time; the
+        method only updates time fields when precision rank increases or the
+        existing copy had no time at all.  Summary/title enrichment is also
+        one-way.  The article URL/identity/created row is never changed.
+        """
+        winner = prefer_richer_article(existing, incoming)
+        if winner is not incoming:
+            return False
+
+        updates: dict[str, object] = {}
+        old_rank = self._metadata_precision_rank(
+            getattr(existing, "published_at_precision", "unknown")
+        )
+        new_rank = self._metadata_precision_rank(
+            getattr(incoming, "published_at_precision", "unknown")
+        )
+        existing_pub = getattr(existing, "published_at", None)
+        incoming_pub = getattr(incoming, "published_at", None)
+        if new_rank > old_rank or (existing_pub is None and incoming_pub is not None):
+            updates["published_at"] = incoming_pub.isoformat() if incoming_pub else None
+            updates["published_at_precision"] = (
+                getattr(incoming, "published_at_precision", "unknown") or "unknown"
+            )
+
+        existing_summary = str(getattr(existing, "summary", "") or "").strip()
+        incoming_summary = str(getattr(incoming, "summary", "") or "").strip()
+        if incoming_summary and not existing_summary:
+            updates["summary"] = getattr(incoming, "summary", None)
+            updates["summary_source"] = getattr(incoming, "summary_source", None)
+
+        existing_title = str(getattr(existing, "title", "") or "").strip()
+        incoming_title = str(getattr(incoming, "title", "") or "").strip()
+        if incoming_title and not existing_title:
+            updates["title"] = getattr(incoming, "title", "")
+
+        if not updates:
+            return False
+        assignments = ", ".join(f"{column} = ?" for column in updates)
+        values = list(updates.values()) + [existing.url]
+        self.conn.execute(
+            f"UPDATE articles SET {assignments} WHERE url = ?",
+            values,
+        )
+        self.conn.commit()
+        return True
+
+    def mark_articles_delivered(
+        self, urls: list[str], delivered_at: datetime | None = None
+    ) -> int:
+        """Record first successful delivery time for the given article URLs."""
+        unique = list(dict.fromkeys(str(url) for url in urls if url))
+        if not unique:
+            return 0
+        timestamp = (delivered_at or datetime.now()).isoformat()
+        changed = 0
+        for chunk in self._chunks(unique):
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = self.conn.execute(
+                f"UPDATE articles SET delivered_at = COALESCE(delivered_at, ?) "
+                f"WHERE url IN ({placeholders})",
+                [timestamp, *chunk],
+            )
+            changed += max(0, cursor.rowcount)
+        self.conn.commit()
+        return changed
 
     def count_topics(self) -> int:
         row = self.conn.execute("SELECT COUNT(*) FROM news_topics").fetchone()
