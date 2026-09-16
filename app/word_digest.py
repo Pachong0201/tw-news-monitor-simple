@@ -58,6 +58,7 @@ def build_word_digest(
     election_annotations: dict[str, ElectionAnnotation] | None = None,
     military_topic_urls: set[str] | None = None,
     military_event_config: dict | None = None,
+    social_items: list[dict] | None = None,
 ) -> Path:
     if not articles:
         raise ValueError("No articles to generate Word digest")
@@ -562,6 +563,10 @@ def build_word_digest(
                             p.add_run("；")
                         _add_hyperlink(p, member.url, member.url)
                 doc.add_paragraph()
+
+    if social_items:
+        from .social_monitor.word_section import append_social_section
+        append_social_section(doc, social_items, generated_at)
 
     doc.add_paragraph()
     p = doc.add_paragraph()

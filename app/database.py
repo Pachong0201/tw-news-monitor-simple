@@ -9,7 +9,7 @@ from .article_identity import article_identity_key, prefer_richer_article
 from .models import Article
 
 logger = logging.getLogger(__name__)
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 IDENTITY_BACKFILL_BATCH = 500
 
 
@@ -169,6 +169,7 @@ class Database:
             )
 
             self._ensure_topics_schema()
+            self._ensure_social_schema()
             self._backfill_identity_keys()
 
             self.conn.execute(
@@ -255,6 +256,157 @@ class Database:
         ):
             if col not in columns:
                 self.conn.execute(f"ALTER TABLE news_topics ADD COLUMN {ddl}")
+
+    def _ensure_social_schema(self) -> None:
+        """Create political-social-monitor tables without touching news data."""
+        self.conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS political_person (
+                person_id TEXT PRIMARY KEY,
+                canonical_name TEXT NOT NULL,
+                display_name TEXT,
+                current_role TEXT,
+                organization TEXT,
+                party TEXT,
+                jurisdiction_level TEXT,
+                jurisdiction TEXT,
+                election_scope TEXT,
+                candidate_id TEXT,
+                monitoring_tier INTEGER,
+                active_from TEXT,
+                active_to TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS social_account (
+                account_id TEXT PRIMARY KEY,
+                person_id TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                platform_user_id TEXT,
+                handle TEXT,
+                canonical_url TEXT,
+                display_name TEXT,
+                account_type TEXT,
+                account_status TEXT NOT NULL DEFAULT 'unknown',
+                verification_status TEXT NOT NULL DEFAULT 'unverified',
+                verification_method TEXT,
+                verification_source_url TEXT,
+                verified_at TEXT,
+                collection_method TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                monitoring_priority INTEGER,
+                first_seen_at TEXT NOT NULL,
+                last_checked_at TEXT,
+                last_success_at TEXT,
+                last_seen_post_id TEXT,
+                last_seen_published_at TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_error_code TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(person_id) REFERENCES political_person(person_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS social_post (
+                post_id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                platform_post_id TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                person_id TEXT NOT NULL,
+                published_at TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                text TEXT,
+                normalized_text TEXT,
+                title TEXT,
+                canonical_url TEXT,
+                media_type TEXT,
+                media_urls_json TEXT,
+                thumbnail_url TEXT,
+                external_urls_json TEXT,
+                is_reply INTEGER NOT NULL DEFAULT 0,
+                is_repost INTEGER NOT NULL DEFAULT 0,
+                is_quote INTEGER NOT NULL DEFAULT 0,
+                reply_to_post_id TEXT,
+                quoted_post_id TEXT,
+                reposted_post_id TEXT,
+                language TEXT,
+                content_hash TEXT NOT NULL,
+                crosspost_group_id TEXT,
+                edited INTEGER NOT NULL DEFAULT 0,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                raw_payload_hash TEXT,
+                raw_snapshot_path TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(platform, platform_post_id),
+                FOREIGN KEY(account_id) REFERENCES social_account(account_id),
+                FOREIGN KEY(person_id) REFERENCES political_person(person_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS social_post_revision (
+                revision_id TEXT PRIMARY KEY,
+                post_id TEXT NOT NULL,
+                revision_number INTEGER NOT NULL,
+                text TEXT,
+                content_hash TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                raw_snapshot_hash TEXT,
+                UNIQUE(post_id, revision_number),
+                FOREIGN KEY(post_id) REFERENCES social_post(post_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS social_crosspost_group (
+                crosspost_group_id TEXT PRIMARY KEY,
+                person_id TEXT NOT NULL,
+                canonical_post_id TEXT NOT NULL,
+                member_post_ids_json TEXT NOT NULL,
+                matching_method TEXT,
+                matching_score REAL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(canonical_post_id) REFERENCES social_post(post_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS social_source_link (
+                post_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(post_id) REFERENCES social_post(post_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS social_monitor_run (
+                run_id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                accounts_attempted INTEGER NOT NULL DEFAULT 0,
+                accounts_successful INTEGER NOT NULL DEFAULT 0,
+                accounts_failed INTEGER NOT NULL DEFAULT 0,
+                posts_seen INTEGER NOT NULL DEFAULT 0,
+                posts_new INTEGER NOT NULL DEFAULT 0,
+                posts_updated INTEGER NOT NULL DEFAULT 0,
+                posts_deleted INTEGER NOT NULL DEFAULT 0,
+                crossposts_created INTEGER NOT NULL DEFAULT 0,
+                errors_json TEXT,
+                warnings_json TEXT
+            );
+            """
+        )
+        indexes = [
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_social_account_platform_user "
+            "ON social_account(platform, platform_user_id) "
+            "WHERE platform_user_id IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_social_account_person ON social_account(person_id)",
+            "CREATE INDEX IF NOT EXISTS idx_social_post_account ON social_post(account_id)",
+            "CREATE INDEX IF NOT EXISTS idx_social_post_person ON social_post(person_id)",
+            "CREATE INDEX IF NOT EXISTS idx_social_post_crosspost ON social_post(crosspost_group_id)",
+            "CREATE INDEX IF NOT EXISTS idx_social_source_link_source ON social_source_link(source_id)",
+            "CREATE INDEX IF NOT EXISTS idx_social_run_started ON social_monitor_run(started_at)",
+        ]
+        for sql in indexes:
+            self.conn.execute(sql)
 
     def _backfill_identity_keys(self) -> int:
         """Fill missing identity keys in bounded batches and record collisions."""

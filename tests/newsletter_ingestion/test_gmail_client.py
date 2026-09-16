@@ -1,6 +1,6 @@
 import base64
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.newsletter_ingestion.gmail_client import GmailMailboxClient
 from app.newsletter_ingestion.oauth import AUTHORIZED_READONLY, GMAIL_READONLY_SCOPE, AuthContext, MAILBOX_AUTH_REQUIRED
@@ -62,6 +62,7 @@ class FakeService:
 
 def _payload(sender="news@reuters.com", title="Taiwan Strait update", body="<h1>" + "x" * 20 + "</h1>"):
     encoded = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+    recent_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%a, %d %b %Y %H:%M:%S +0000")
     return {
         "id": "m1",
         "payload": {
@@ -70,7 +71,7 @@ def _payload(sender="news@reuters.com", title="Taiwan Strait update", body="<h1>
                 {"name": "From", "value": sender},
                 {"name": "Subject", "value": "Newsletter"},
                 {"name": "Message-ID", "value": "<m1@example.test>"},
-                {"name": "Date", "value": "Wed, 14 Aug 2026 08:00:00 +0000"},
+                {"name": "Date", "value": recent_date},
             ],
             "body": {"data": encoded},
         },

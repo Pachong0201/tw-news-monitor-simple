@@ -68,6 +68,9 @@ from .notification_candidates import (
 from .source_health import SourceHealthStore, SourceOutcome
 from .settings import get_settings, load_environment
 from .news_pipeline import run_delivery_core
+from .social_monitor.crosspost import canonical_posts
+from .social_monitor.relevance import select_word_posts
+from .social_monitor.repository import SocialRepository
 from .pipeline_models import CollectionResult
 from .election2026.config import load_election_config as load_election2026_config
 from .election2026.config import load_entities as load_election2026_entities
@@ -369,6 +372,23 @@ def _classify_and_persist_election2026(
     except Exception as exc:  # noqa: BLE001 - feature must never break pipeline
         logger.warning("Election 2026 classification failed safely: %s", exc)
         return {}
+
+
+def _get_social_word_items(db: Database) -> list[dict]:
+    """Return canonical, Word-eligible social items without blocking Word."""
+    try:
+        repo = SocialRepository(db)
+        items = []
+        for post in canonical_posts(repo):
+            person = repo.get_person(post.get("person_id")) or {}
+            item = dict(post)
+            item["person_display_name"] = person.get("display_name") or person.get("canonical_name")
+            item["person_canonical_name"] = person.get("canonical_name")
+            items.append(item)
+        return select_word_posts(items)
+    except Exception as exc:  # noqa: BLE001 - social section must never block legacy Word
+        logger.warning("Social Word section lookup failed safely: %s", exc)
+        return []
 
 
 def _get_topic_urls_safe(articles, db, topic: str) -> set[str]:
@@ -1330,6 +1350,7 @@ def main() -> None:
             output_dir,
             generated_at=now,
             military_topic_urls=_get_topic_urls_safe(articles, db, "military"),
+            social_items=_get_social_word_items(db),
         )
         test_name = f"\u53f0\u6e7e\u65b0\u95fb\u76d1\u6d4b_\u6d4b\u8bd5_{now.strftime('%Y-%m-%d_%H%M')}.docx"
         test_path = output_path.parent / test_name
@@ -1526,6 +1547,7 @@ def main() -> None:
                     military_topic_urls=_get_topic_urls_safe(
                         digest_articles, db, "military"
                     ),
+                    social_items=_get_social_word_items(db),
                 )
                 print(f"Dry-run Word：{word_path}")
         finally:
@@ -1634,6 +1656,7 @@ def main() -> None:
             military_topic_urls=_get_topic_urls_safe(
                 word_articles, db, "military"
             ),
+            social_items=_get_social_word_items(db),
         )
         if hasattr(db, "mark_articles_delivered"):
             db.mark_articles_delivered(
@@ -1739,6 +1762,7 @@ def main() -> None:
                 military_topic_urls=_get_topic_urls_safe(
                     articles, db, "military"
                 ),
+                social_items=_get_social_word_items(db),
             )
             if hasattr(db, "mark_articles_delivered"):
                 db.mark_articles_delivered([article.url for article in articles], now)
@@ -1991,6 +2015,7 @@ def main() -> None:
                     military_topic_urls=_get_topic_urls_safe(
                         digest_articles, db, "military"
                     ),
+                    social_items=_get_social_word_items(db),
                 )
                 if hasattr(db, "mark_articles_delivered"):
                     db.mark_articles_delivered(
